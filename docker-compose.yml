@@ -1,0 +1,37 @@
+services:
+  db:
+    container_name: github-mirror-db
+    image: postgres:16-alpine
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_DB=${DB_NAME}
+      - POSTGRES_USER=${DB_USERNAME}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./packages/db:/docker-entrypoint-initdb.d
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - github-mirror
+
+  das:
+    container_name: github-mirror-das
+    build:
+      context: ./packages/das
+      dockerfile: Dockerfile
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:6969:6969"
+    depends_on:
+      - db
+    networks:
+      - github-mirror
+
+networks:
+  github-mirror:
+    driver: bridge

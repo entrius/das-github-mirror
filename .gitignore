@@ -1,0 +1,28 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Build outputs
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+
+# Postgres data (local dev)
+data/
