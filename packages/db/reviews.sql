@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     pr_number               INTEGER         NOT NULL,
     reviewer_github_id      VARCHAR(255),
     reviewer_login          VARCHAR(255),
+    reviewer_association    VARCHAR(20),
     review_state            VARCHAR(30)     NOT NULL,
     submitted_at            TIMESTAMP       NOT NULL,
 
