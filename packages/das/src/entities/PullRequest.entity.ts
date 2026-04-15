@@ -59,7 +59,15 @@ export class PullRequest {
   @Column({ name: "commits_count", nullable: true })
   commitsCount: number;
 
-  @Column({ name: "closing_issue_numbers", type: "int", array: true, nullable: true })
+  @Column({ type: "text", array: true, nullable: true })
+  labels: string[] | null;
+
+  @Column({
+    name: "closing_issue_numbers",
+    type: "int",
+    array: true,
+    nullable: true,
+  })
   closingIssueNumbers: number[];
 
   @Column({ name: "scoring_data_stored", default: false })

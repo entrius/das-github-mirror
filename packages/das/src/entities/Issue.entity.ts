@@ -17,8 +17,14 @@ export class Issue {
   @Column({ name: "author_association", nullable: true })
   authorAssociation: string;
 
+  @Column({ nullable: true })
+  title: string | null;
+
   @Column()
   state: string;
+
+  @Column({ name: "state_reason", nullable: true })
+  stateReason: string | null;
 
   @Column({ name: "created_at" })
   createdAt: string;
@@ -28,6 +34,12 @@ export class Issue {
 
   @Column({ name: "updated_at", nullable: true })
   updatedAt: string;
+
+  @Column({ type: "text", array: true, nullable: true })
+  labels: string[] | null;
+
+  @Column({ name: "solved_by_pr", nullable: true })
+  solvedByPr: number | null;
 
   @Column({ name: "is_transferred", default: false })
   isTransferred: boolean;

@@ -12,14 +12,14 @@ export class PrFileContent {
   filename: string;
 
   @Column({ name: "base_content", nullable: true })
-  baseContent: string;
+  baseContent: string | null;
 
   @Column({ name: "head_content", nullable: true })
-  headContent: string;
+  headContent: string | null;
 
   @Column({ name: "is_binary", default: false })
   isBinary: boolean;
 
   @Column({ name: "byte_size", nullable: true })
-  byteSize: number;
+  byteSize: number | null;
 }

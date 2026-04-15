@@ -8,8 +8,11 @@ export class LabelEvent {
   @Column({ name: "repo_full_name" })
   repoFullName: string;
 
-  @Column({ name: "issue_number", nullable: true })
-  issueNumber: number;
+  @Column({ name: "target_number", nullable: true })
+  targetNumber: number | null;
+
+  @Column({ name: "target_type", default: "issue" })
+  targetType: string;
 
   @Column({ name: "label_name" })
   labelName: string;
@@ -18,10 +21,10 @@ export class LabelEvent {
   action: string;
 
   @Column({ name: "actor_github_id", nullable: true })
-  actorGithubId: string;
+  actorGithubId: string | null;
 
   @Column({ name: "actor_login", nullable: true })
-  actorLogin: string;
+  actorLogin: string | null;
 
   @Column({ name: "actor_association", nullable: true })
   actorAssociation: string;

@@ -13,7 +13,18 @@ services:
       - ./data/postgres:/var/lib/postgresql/data
       - ./packages/db:/docker-entrypoint-initdb.d
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5434:5432" # 5434 to avoid conflict with other Postgres instances on this host
+    networks:
+      - github-mirror
+
+  redis:
+    container_name: github-mirror-redis
+    image: redis:7-alpine
+    restart: always
+    volumes:
+      - ./data/redis:/data
+    ports:
+      - "127.0.0.1:6379:6379"
     networks:
       - github-mirror
 
@@ -29,6 +40,7 @@ services:
       - "127.0.0.1:6969:6969"
     depends_on:
       - db
+      - redis
     networks:
       - github-mirror
 

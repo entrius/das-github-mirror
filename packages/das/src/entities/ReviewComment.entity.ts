@@ -18,7 +18,7 @@ export class ReviewComment {
   reviewerLogin: string;
 
   @Column({ name: "review_id", type: "bigint", nullable: true })
-  reviewId: string;
+  reviewId: string | null;
 
   @Column({ nullable: true })
   path: string;

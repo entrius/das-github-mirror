@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     additions               INTEGER,
     deletions               INTEGER,
     commits_count           INTEGER,
+    labels                  TEXT[],
     closing_issue_numbers   INTEGER[],
     scoring_data_stored     BOOLEAN         NOT NULL DEFAULT FALSE,
 
