@@ -27,3 +27,4 @@ Thumbs.db
 
 # Postgres data (local dev)
 data/
+.claude

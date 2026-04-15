@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS pr_files (
     status              VARCHAR(20)     NOT NULL,
     additions           INTEGER         NOT NULL DEFAULT 0,
     deletions           INTEGER         NOT NULL DEFAULT 0,
+    changes             INTEGER         NOT NULL DEFAULT 0,
 
     PRIMARY KEY (repo_full_name, pr_number, filename)
 );

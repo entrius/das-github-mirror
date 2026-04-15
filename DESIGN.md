@@ -7,8 +7,10 @@ The mirror is driven by GitHub webhooks. Data arrives in real-time as events hap
 ```
 GitHub event occurs
     → webhook delivers metadata to mirror (free, instant)
+    → webhook handler upserts metadata to Postgres, returns 202 immediately
     → if the event implies fetchable content (PR opened/pushed/merged),
-      mirror calls GitHub API to fetch diffs + file contents
+      handler enqueues a fetch job to Redis (BullMQ)
+    → worker picks up job, calls GitHub API for diffs + file contents
     → store everything
     → validators query the mirror, never GitHub
 ```
@@ -42,7 +44,7 @@ The existing schema in `packages/db/` covers 10 tables. These are the webhook wr
 | `comments` | Issue + PR thread comments, append-only (upsert on edit) |
 | `review_comments` | Inline code review comments on PR diffs, append-only (upsert on edit) |
 | `label_events` | Append-only log of every label add/remove |
-| `pr_files` | File-level change metadata (filename, status, additions, deletions) |
+| `pr_files` | File-level change metadata (filename, status, additions, deletions, changes) |
 | `pr_file_contents` | Actual file content (base + head versions) for AST/token scoring |
 | `webhook_deliveries` | Dedup table keyed on `X-GitHub-Delivery` header |
 
@@ -117,6 +119,9 @@ CREATE VIEW pr_review_summary AS
 SELECT
     repo_full_name,
     pr_number,
+    COUNT(*) FILTER (WHERE review_state = 'CHANGES_REQUESTED'
+                       AND reviewer_association IN ('OWNER', 'MEMBER', 'COLLABORATOR'))
+        AS maintainer_changes_requested_count,
     COUNT(*) FILTER (WHERE review_state = 'CHANGES_REQUESTED') AS changes_requested_count,
     COUNT(*) FILTER (WHERE review_state = 'APPROVED') AS approved_count,
     COUNT(*) FILTER (WHERE review_state = 'COMMENTED') AS commented_count
@@ -131,7 +136,8 @@ GROUP BY repo_full_name, pr_number;
 |---|---|
 | `repo_full_name` | Which repo |
 | `pr_number` | Which PR |
-| `changes_requested_count` | Direct input to review quality multiplier (each round costs 12% in OSS scoring, 15% in discovery scoring) |
+| `maintainer_changes_requested_count` | Direct input to review quality multiplier — only maintainer (OWNER/MEMBER/COLLABORATOR) reviews apply the penalty (15% per round) |
+| `changes_requested_count` | Total changes-requested from all reviewers — contextual, not directly scored |
 | `approved_count` | Not currently in scoring formulas, but useful signal for dashboards and future scoring changes |
 | `commented_count` | Same — contextual, not scored |
 
@@ -185,113 +191,47 @@ JOIN issues i
 
 ---
 
-### Materialized View: `contributor_repo_pr_counts`
-
-Simple counts of PRs by state per contributor per repo. Refreshed every 1-5 minutes.
-
-```sql
-CREATE MATERIALIZED VIEW contributor_repo_pr_counts AS
-SELECT
-    author_github_id,
-    repo_full_name,
-    COUNT(*) FILTER (WHERE state = 'MERGED')    AS merged_count,
-    COUNT(*) FILTER (WHERE state = 'CLOSED')    AS closed_count,
-    COUNT(*) FILTER (WHERE state = 'OPEN')      AS open_count,
-    MIN(merged_at) FILTER (WHERE state = 'MERGED') AS earliest_merge_at
-FROM pull_requests
-WHERE created_at >= NOW() - INTERVAL '35 days'
-GROUP BY author_github_id, repo_full_name;
-
-CREATE UNIQUE INDEX ON contributor_repo_pr_counts (author_github_id, repo_full_name);
-```
-
-**Why materialized:** Aggregates over the full 35-day window of PRs across many contributors and repos. Live aggregation on every API request is wasteful. `REFRESH MATERIALIZED VIEW CONCURRENTLY` keeps it current with no read locks — validators can query while refresh runs.
-
-**Columns:**
-| Column | Why |
-|---|---|
-| `author_github_id` | Which contributor |
-| `repo_full_name` | Which repo |
-| `merged_count` | Numerator for credibility ratio, eligibility gate threshold (min 5 valid merged PRs) |
-| `closed_count` | Denominator component for credibility ratio (closed = failed PRs) |
-| `open_count` | Input to open PR spam threshold check (binary penalty if over threshold) and collateral calculation |
-| `earliest_merge_at` | Pioneer ordering — who merged first in this repo gets pioneer dividends from followers |
-
----
-
-### Materialized View: `contributor_repo_issue_counts`
-
-Simple counts of issues by state per contributor per repo. Refreshed every 1-5 minutes.
-
-```sql
-CREATE MATERIALIZED VIEW contributor_repo_issue_counts AS
-SELECT
-    author_github_id,
-    repo_full_name,
-    COUNT(*) FILTER (WHERE state = 'CLOSED')    AS closed_count,
-    COUNT(*) FILTER (WHERE state = 'OPEN')      AS open_count
-FROM issues
-WHERE created_at >= NOW() - INTERVAL '35 days'
-GROUP BY author_github_id, repo_full_name;
-
-CREATE UNIQUE INDEX ON contributor_repo_issue_counts (author_github_id, repo_full_name);
-```
-
-**Why materialized:** Same reason as PR counts — avoids re-aggregating the 35-day window on every request.
-
-**Columns:**
-| Column | Why |
-|---|---|
-| `author_github_id` | Which contributor |
-| `repo_full_name` | Which repo |
-| `closed_count` | Input to issue credibility ratio (closed without solving PR = failure) |
-| `open_count` | Input to open issue spam threshold check |
-
----
-
 ### View: `pr_scoring_inputs`
 
-The main "give me everything" view. Joins a PR row with its review summary, linked issue data, and contributor counts. Every column is a raw fact or simple count. Zero scoring math.
+The main "give me everything" view for PR scoring. Joins a PR row with its review summary. Every column is a raw fact or simple count. Zero scoring math. Contributor counts (credibility, eligibility) are served via a separate API endpoint with a validator-supplied lookback window — the mirror doesn't hardcode the scoring time window.
 
 ```sql
 CREATE VIEW pr_scoring_inputs AS
 SELECT
     p.repo_full_name,
     p.pr_number,
+    p.title,
     p.author_github_id,
     p.author_login,
     p.author_association,
     p.state,
+    p.labels,
     p.created_at,
+    p.closed_at,
     p.merged_at,
+    p.last_edited_at,
     p.merged_by_login,
     p.base_ref,
     p.head_sha,
     p.base_sha,
+    p.merge_base_sha,
+    p.additions,
+    p.deletions,
+    p.commits_count,
     p.closing_issue_numbers,
     p.scoring_data_stored,
+    -- Anti-gaming flag: PR body edited after merge (blocks issue bonuses)
+    CASE WHEN p.last_edited_at > p.merged_at THEN TRUE ELSE FALSE END AS edited_after_merge,
     -- Time fact (not decay — validator computes that)
     EXTRACT(EPOCH FROM (NOW() - p.merged_at)) / 3600.0 AS hours_since_merge,
-    -- Review counts
+    -- Review counts (maintainer-only for scoring penalty)
+    COALESCE(r.maintainer_changes_requested_count, 0) AS maintainer_changes_requested_count,
     COALESCE(r.changes_requested_count, 0)  AS changes_requested_count,
     COALESCE(r.approved_count, 0)           AS approved_count,
-    COALESCE(r.commented_count, 0)          AS commented_count,
-    -- Contributor PR counts in this repo
-    COALESCE(pc.merged_count, 0)            AS contributor_merged_count,
-    COALESCE(pc.closed_count, 0)            AS contributor_closed_count,
-    COALESCE(pc.open_count, 0)              AS contributor_open_count,
-    pc.earliest_merge_at                    AS contributor_earliest_merge_in_repo,
-    -- Contributor issue counts in this repo
-    COALESCE(ic.closed_count, 0)            AS contributor_issues_closed,
-    COALESCE(ic.open_count, 0)              AS contributor_issues_open
+    COALESCE(r.commented_count, 0)          AS commented_count
 FROM pull_requests p
 LEFT JOIN pr_review_summary r
-    ON r.repo_full_name = p.repo_full_name AND r.pr_number = p.pr_number
-LEFT JOIN contributor_repo_pr_counts pc
-    ON pc.author_github_id = p.author_github_id AND pc.repo_full_name = p.repo_full_name
-LEFT JOIN contributor_repo_issue_counts ic
-    ON ic.author_github_id = p.author_github_id AND ic.repo_full_name = p.repo_full_name
-WHERE p.created_at >= NOW() - INTERVAL '35 days';
+    ON r.repo_full_name = p.repo_full_name AND r.pr_number = p.pr_number;
 ```
 
 **Why this view exists:** This is what powers the main validator API endpoint. One query returns everything a validator needs per PR — all facts, all counts, no opinions. The validator takes this, applies its own repo weights, token scoring, credibility formulas, eligibility gates, and multiplier math.
@@ -301,77 +241,72 @@ WHERE p.created_at >= NOW() - INTERVAL '35 days';
 |---|---|
 | `repo_full_name` | Which repo — validator maps to repo weight from their own config |
 | `pr_number` | Which PR |
+| `title` | PR title — informational, not scored |
 | `author_github_id` | Stable identity — validator maps to hotkey via identity service |
 | `author_login` | Display name for readability |
 | `author_association` | Maintainer check (OWNER/MEMBER/COLLABORATOR = maintainer, gets 0 score in own repo) |
 | `state` | OPEN/CLOSED/MERGED — determines which scoring path applies |
 | `created_at` | 35-day lookback filter, issue-predates-PR check |
+| `closed_at` | When the PR was closed (if applicable) |
 | `merged_at` | Time decay input, issue close-window check, pioneer ordering |
+| `last_edited_at` | Timestamp of last PR body edit — critical for post-merge edit detection |
 | `merged_by_login` | Audit — detects self-merge patterns |
 | `base_ref` | Validator checks PR targets an acceptable branch |
 | `head_sha` | Identifies the exact diff version stored |
 | `base_sha` | Together with head_sha, defines what changed |
+| `merge_base_sha` | Common ancestor — validators use this for tree-diff scoring |
+| `additions` | Total lines added — input to code density calculation |
+| `deletions` | Total lines removed — input to code density; sole score source for removed files |
+| `commits_count` | Number of commits in the PR — informational |
 | `closing_issue_numbers` | Which issues this PR closes — feeds issue multiplier and discovery scoring |
 | `scoring_data_stored` | Whether diff/file contents are available via the diff endpoint |
+| `edited_after_merge` | Anti-gaming flag — if `true`, all issue bonuses are blocked for this PR |
 | `hours_since_merge` | Raw time fact — validator plugs into its own time decay formula |
-| `changes_requested_count` | Input to review quality multiplier |
+| `maintainer_changes_requested_count` | Input to review quality multiplier — only maintainer reviews count (15% penalty per round) |
+| `changes_requested_count` | Total changes-requested from all reviewers — contextual |
 | `approved_count` | Context signal |
 | `commented_count` | Context signal |
-| `contributor_merged_count` | Input to credibility ratio numerator, eligibility gate |
-| `contributor_closed_count` | Input to credibility ratio denominator |
-| `contributor_open_count` | Input to open PR spam threshold |
-| `contributor_earliest_merge_in_repo` | Pioneer ordering — earliest merge = pioneer, gets dividends from followers |
-| `contributor_issues_closed` | Input to issue credibility ratio |
-| `contributor_issues_open` | Input to open issue spam threshold |
-
 ---
 
 ## Validator API Endpoints
-
-The "two calls away" pattern:
 
 ```
 GET /api/v1/contributors/{github_id}/scoring-inputs?since={date}
     → Returns pr_scoring_inputs rows for this contributor
     → All facts + counts, no scoring math
 
+GET /api/v1/contributors/{github_id}/counts?days={N}
+    → Returns aggregated PR/issue counts per repo for this contributor
+    → Lookback window is validator-controlled via `days` parameter
+
 GET /api/v1/pull-requests/{owner}/{repo}/{number}/files
     → Returns pr_files + pr_file_contents for token/AST scoring
+
+GET /api/v1/pull-requests/{owner}/{repo}/{number}/linked-issues
+    → Returns pr_linked_issues rows for issue multiplier evaluation
+
+GET /api/v1/repos
+    → List all tracked repos
 
 GET /api/v1/repos/{owner}/{repo}/issues?state={state}&since={date}
     → Returns issues for discovery scoring
 
-GET /api/v1/issues/{owner}/{repo}/{number}/label-events
-    → Returns chronological label events for anti-gaming replay
+GET /api/v1/repos/{owner}/{repo}/contributors
+    → Returns contributor_repo_roles for this repo
 
-GET /api/v1/pull-requests/{owner}/{repo}/{number}/linked-issues
-    → Returns pr_linked_issues rows for issue multiplier evaluation
+GET /api/v1/repos/{owner}/{repo}/label-events?target={number}&since={date}
+    → Returns chronological label events for anti-gaming replay
 ```
 
 ---
-
-## Materialized View Refresh
-
-```sql
--- pg_cron or application-level scheduler, every 1-5 minutes:
-REFRESH MATERIALIZED VIEW CONCURRENTLY contributor_repo_pr_counts;
-REFRESH MATERIALIZED VIEW CONCURRENTLY contributor_repo_issue_counts;
-```
-
-`CONCURRENTLY` requires a unique index on each materialized view (already defined above). No read locks during refresh — validators see the previous snapshot until refresh completes.
 
 ---
 
 ## Gotchas & Design Decisions
 
-### `closing_issue_numbers` extraction
+### `closing_issue_numbers` extraction — RESOLVED
 
-The `pull_request` webhook payload does not include parsed issue linkages directly. Options:
-1. **Parse PR body text** — regex for "closes #123", "fixes #123", etc. Fragile (many formats).
-2. **Call GitHub's timeline/events API** — one extra API call per PR. Reliable.
-3. **Use the GraphQL API `closingIssuesReferences`** — most accurate, one call.
-
-Decision needed. Leaning toward option 3 (GraphQL) for accuracy.
+The `pull_request` webhook payload does not include parsed issue linkages directly. **Decision: use the GraphQL API `closingIssuesReferences`** (option 3). This is the most accurate source — it returns exactly what GitHub will auto-close on merge, avoiding regex fragility and cross-repo reference edge cases. Called on `pull_request.opened`, `.synchronize`, and `.closed`/`.merged` events. One GraphQL call per PR event — trivial rate limit impact given 15,000/hr per installation.
 
 ### Webhook ordering
 
@@ -387,7 +322,7 @@ If a repo owner uninstalls the GitHub App, webhooks stop and API calls fail. The
 
 ### Post-merge PR edits
 
-Someone edits a PR description after merge to add "closes #456". The `pull_request.edited` webhook fires with new body text. Flag this rather than silently updating `closing_issue_numbers` — current scoring treats post-merge edits as suspicious.
+Someone edits a PR description after merge to add "closes #456". The `pull_request.edited` webhook fires with new body text. The `last_edited_at` timestamp is stored and compared against `merged_at` — if `last_edited_at > merged_at`, the `edited_after_merge` flag in `pr_scoring_inputs` is set to `true`, which **blocks all issue bonuses** for that PR. The `closing_issue_numbers` array is still updated (for data accuracy), but the flag tells validators not to award bonuses.
 
 ---
 
@@ -412,14 +347,64 @@ With real-time data, validator scoring cycles can run more frequently (every 30 
 
 ---
 
+## Infrastructure & Deployment
+
+### Multi-server architecture
+
+Two identical, stateless NestJS app servers behind a load balancer, sharing one Postgres and one Redis instance. The redundancy is at the **app layer** — if one server dies, the other handles all traffic. Database and Redis redundancy are handled by managed services (auto-failover).
+
+```
+                         ┌──── Server A (NestJS + BullMQ worker) ────┐
+GitHub ──→ LB ──→        │  webhook handler → upsert + enqueue       │
+                         └───────────────┬───────────────────────────┘
+                                         │
+                         ┌──── Server B (NestJS + BullMQ worker) ────┐
+                         │  webhook handler → upsert + enqueue       │
+                         └───────────────┬───────────────────────────┘
+                                         │
+                              ┌──────────┴──────────┐
+                              │                     │
+                        Postgres (managed)    Redis (managed)
+                        with auto-failover    with auto-failover
+```
+
+**Why one database, not two:** Two databases means data sync — replication lag, conflict resolution, split-brain scenarios. None of that is worth the complexity. Both app servers are stateless; all state lives in Postgres + Redis. Managed Postgres (RDS, Supabase, Railway) provides automatic failover with a standby replica — this is a solved problem at the infrastructure layer.
+
+**How webhooks flow:** The load balancer sends each webhook to **one** server (not both). Sending to both would double GitHub API calls and create race conditions. The `webhook_deliveries` dedup table handles the edge case where GitHub retries a webhook and the retry hits the other server.
+
+**How fetch jobs work with two servers:** Both servers run BullMQ workers that compete for jobs from the same Redis queue. Redis guarantees each job is dequeued by exactly one worker. If Server A enqueues a job and then dies, Server B's worker picks it up.
+
+### Job queue (BullMQ + Redis)
+
+Webhook handlers that need GitHub API calls (PR file fetches, GraphQL queries) don't call the API inline. Instead, they enqueue jobs to a Redis-backed BullMQ queue:
+
+- **Concurrency:** Workers process up to 5 jobs concurrently (configurable). Prevents API burst during spikes.
+- **Retry:** Failed jobs retry 3 times with exponential backoff (5s, 10s, 20s).
+- **Dedup:** Jobs use deterministic IDs (`files-{repo}-{pr}`). If a `synchronize` event arrives while a fetch job for the same PR is still queued, the new job replaces the old one.
+- **Resilience:** If the app crashes, pending jobs remain in Redis and are picked up on restart (or by the other server).
+
+Only two job types exist:
+1. `fetch-closing-issues` — GraphQL call for `closingIssuesReferences`, updates `closing_issue_numbers` on the PR row.
+2. `fetch-pr-files` — REST call for PR file list + contents, writes to `pr_files` + `pr_file_contents`, sets `scoring_data_stored = true`.
+
+All other webhook handlers (issues, reviews, comments, labels, installations) are pure DB upserts with no API calls — they execute inline and return immediately.
+
+---
+
+## Scope Constraints
+
+- **Public repos only.** The mirror does not handle private repos. The GitHub App is only installed on public repositories.
+- **No scoring logic.** The mirror serves raw facts and counts. All scoring math (credibility, multipliers, eligibility gates, token scoring) is computed by validators.
+- **No precomputed AST/token scores.** The mirror stores raw file contents; validators run tree-sitter locally. Token scoring logic is too dynamic to centralize.
+
+---
+
 ## Next Steps
 
-1. **Define TypeORM entities** matching the existing SQL schemas in `packages/db/`
-2. **Implement webhook receiver** — verify signatures, dedup via `webhook_deliveries`, upsert into raw tables
-3. **Implement diff fetcher** — triggered by PR webhooks (opened/synchronize/merged), stores to `pr_files` + `pr_file_contents`
-4. **Create the SQL views** — `contributor_repo_roles`, `pr_review_summary`, `pr_linked_issues`, `pr_scoring_inputs`
-5. **Create materialized views** — `contributor_repo_pr_counts`, `contributor_repo_issue_counts` + refresh schedule
-6. **Build validator API endpoints** — backed by the views above
-7. **Backfill service** — fetch historical data when a repo is first installed
-8. **Resolve `closing_issue_numbers` extraction** — pick parsing strategy (body regex vs GraphQL API)
-9. **Health monitoring** — alert on stale `last_event_at` per repo
+1. ~~**Define TypeORM entities**~~ ✅
+2. ~~**Implement webhook receiver**~~ ✅ (signature verify, dedup, upsert handlers for all event types)
+3. ~~**Implement GraphQL fetcher + diff fetcher**~~ ✅ (BullMQ queue, called on PR open/sync/merge)
+4. ~~**Create SQL views**~~ ✅ (`contributor_repo_roles`, `pr_review_summary`, `pr_linked_issues`, `pr_scoring_inputs`)
+5. **Build validator API endpoints** — backed by views + raw tables, with API key auth
+6. **Backfill service** — fetch historical data when a repo is first installed
+7. **Health monitoring** — alert on stale `last_event_at` per repo

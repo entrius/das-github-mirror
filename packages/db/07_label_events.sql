@@ -3,7 +3,8 @@
 CREATE TABLE IF NOT EXISTS label_events (
     id                  SERIAL          PRIMARY KEY,
     repo_full_name      VARCHAR(255)    NOT NULL,
-    issue_number        INTEGER,
+    target_number       INTEGER,
+    target_type         VARCHAR(5)      NOT NULL DEFAULT 'issue',
     label_name          VARCHAR(255)    NOT NULL,
     action              VARCHAR(20)     NOT NULL,
     actor_github_id     VARCHAR(255),
@@ -12,4 +13,4 @@ CREATE TABLE IF NOT EXISTS label_events (
     timestamp           TIMESTAMP       NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_label_events_issue ON label_events(repo_full_name, issue_number, timestamp);
+CREATE INDEX IF NOT EXISTS idx_label_events_target ON label_events(repo_full_name, target_number, timestamp);
