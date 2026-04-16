@@ -1,17 +1,31 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  Injectable,
-  UnauthorizedException,
-} from "@nestjs/common";
+import { ExecutionContext, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import {
+  ThrottlerGuard,
+  ThrottlerModuleOptions,
+  ThrottlerStorage,
+} from "@nestjs/throttler";
+import { Reflector } from "@nestjs/core";
 import { Request } from "express";
 
+/**
+ * Guard that enforces a strict per-IP rate limit for unauthenticated requests
+ * and skips throttling entirely when a valid x-api-key header is present.
+ *
+ * Validators (and anyone with an API key) get unlimited access.
+ * Anonymous callers get a strict ceiling (see ThrottlerModule config in app module).
+ */
 @Injectable()
-export class ApiKeyGuard implements CanActivate {
+export class ApiKeyGuard extends ThrottlerGuard {
   private readonly apiKeys: Set<string>;
 
-  constructor(config: ConfigService) {
+  constructor(
+    options: ThrottlerModuleOptions,
+    storage: ThrottlerStorage,
+    reflector: Reflector,
+    config: ConfigService,
+  ) {
+    super(options, storage, reflector);
     const raw = config.get<string>("API_KEYS") ?? "";
     this.apiKeys = new Set(
       raw
@@ -21,20 +35,14 @@ export class ApiKeyGuard implements CanActivate {
     );
   }
 
-  canActivate(context: ExecutionContext): boolean {
+  protected shouldSkip(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<Request>();
     const key = req.headers["x-api-key"];
 
-    if (this.apiKeys.size === 0) {
-      throw new UnauthorizedException(
-        "API key authentication is not configured on this server",
-      );
+    if (typeof key === "string" && this.apiKeys.has(key)) {
+      return Promise.resolve(true); // Valid API key — no rate limit
     }
 
-    if (typeof key !== "string" || !this.apiKeys.has(key)) {
-      throw new UnauthorizedException("Invalid or missing x-api-key header");
-    }
-
-    return true;
+    return Promise.resolve(false); // Enforce throttle for anonymous traffic
   }
 }

@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
+import { ThrottlerModule } from "@nestjs/throttler";
 import {
   Repo,
   PullRequest,
@@ -21,6 +22,15 @@ import { ContributorsService } from "./contributors.service";
       PrFile,
       PrFileContent,
       LabelEvent,
+    ]),
+    // Strict per-IP limit for anonymous callers; bypassed by ApiKeyGuard
+    // when a valid x-api-key is presented.
+    ThrottlerModule.forRoot([
+      {
+        name: "default",
+        ttl: 60_000, // 1 minute
+        limit: 30, // 30 requests per IP per minute
+      },
     ]),
   ],
   controllers: [ContributorsController],

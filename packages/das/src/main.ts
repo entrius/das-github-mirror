@@ -7,7 +7,11 @@ import { json } from "express";
 const setupSwagger = (app: INestApplication): void => {
   const config = new DocumentBuilder()
     .setTitle("GitHub Mirror DAS")
-    .setDescription("GitHub Mirror Data Access Service for Gittensor")
+    .setDescription(
+      "GitHub Mirror Data Access Service for Gittensor. " +
+        "API is publicly accessible but rate-limited per IP. " +
+        "Provide a valid x-api-key header to bypass rate limits.",
+    )
     .setVersion("1.0")
     .addApiKey({ type: "apiKey", name: "x-api-key", in: "header" }, "api-key")
     .build();
