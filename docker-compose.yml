@@ -48,6 +48,8 @@ services:
       - .env
     ports:
       - "127.0.0.1:6969:6969"
+    volumes:
+      - ./secrets:/app/secrets:ro
     depends_on:
       db:
         condition: service_healthy
