@@ -5,7 +5,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { readFileSync } from "fs";
 import { sign } from "jsonwebtoken";
-import { PrFile, PrFileContent, Repo } from "../entities";
+import { PrFile, PrFileContent, PullRequest, Repo } from "../entities";
 
 interface InstallationToken {
   token: string;
@@ -25,6 +25,8 @@ export class GitHubFetcherService implements OnModuleInit {
     private readonly prFileRepo: Repository<PrFile>,
     @InjectRepository(PrFileContent)
     private readonly prFileContentRepo: Repository<PrFileContent>,
+    @InjectRepository(PullRequest)
+    private readonly prRepo: Repository<PullRequest>,
     @InjectRepository(Repo)
     private readonly repoRepo: Repository<Repo>,
   ) {
@@ -143,6 +145,12 @@ export class GitHubFetcherService implements OnModuleInit {
     const [owner, repo] = repoFullName.split("/");
     const token = await this.getTokenForRepo(repoFullName);
 
+    // Grab PR metadata for base/head SHAs
+    const pr = await this.prRepo.findOneBy({ repoFullName, prNumber });
+    if (!pr) {
+      throw new Error(`PR ${repoFullName}#${prNumber} not found in DB`);
+    }
+
     // Fetch file list (paginated)
     const files = await this.fetchAllPrFiles(owner, repo, prNumber, token);
 
@@ -174,6 +182,7 @@ export class GitHubFetcherService implements OnModuleInit {
           owner,
           repo,
           token,
+          pr.baseSha,
         );
       }
     }
@@ -222,8 +231,10 @@ export class GitHubFetcherService implements OnModuleInit {
     owner: string,
     repo: string,
     token: string,
+    baseSha: string | null,
   ): Promise<void> {
     try {
+      // Head version — the file contents as of this PR's head commit
       const headContent = await this.fetchFileAtRef(
         owner,
         repo,
@@ -232,14 +243,16 @@ export class GitHubFetcherService implements OnModuleInit {
         token,
       );
 
-      // For added files there is no base version
+      // Base version — the file contents as of the PR's base commit.
+      // For renames, use the previous filename. For "added" files, no base version exists.
       let baseContent: string | null = null;
-      if (file.status !== "added" && file.previous_filename) {
+      if (file.status !== "added" && baseSha) {
+        const basePath = file.previous_filename ?? file.filename;
         baseContent = await this.fetchFileAtRef(
           owner,
           repo,
-          file.previous_filename,
-          null,
+          basePath,
+          baseSha,
           token,
         );
       }
