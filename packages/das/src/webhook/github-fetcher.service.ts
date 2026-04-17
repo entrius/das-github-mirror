@@ -98,6 +98,63 @@ export class GitHubFetcherService implements OnModuleInit {
     return this.getInstallationToken(repo.installationId);
   }
 
+  // --- REST: compare API for merge-base ---
+
+  /**
+   * Fetch the merge-base commit SHA between two refs.
+   * The merge-base is the common ancestor — the correct "before" state for
+   * computing a PR's own changes via tree-diff scoring (which differs from
+   * baseRefOid when the base branch has moved forward since PR open).
+   */
+  async fetchMergeBaseSha(
+    repoFullName: string,
+    baseSha: string,
+    headSha: string,
+  ): Promise<string | null> {
+    const token = await this.getTokenForRepo(repoFullName);
+    const maxAttempts = 3;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await fetch(
+          `https://api.github.com/repos/${repoFullName}/compare/${baseSha}...${headSha}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github+json",
+            },
+          },
+        );
+
+        if (res.ok) {
+          const data: any = await res.json();
+          return data?.merge_base_commit?.sha ?? null;
+        }
+
+        if (attempt < maxAttempts) {
+          const delay = Math.min(5000 * 2 ** (attempt - 1), 30_000);
+          this.logger.warn(
+            `Compare API for ${repoFullName} failed: ${res.status} (attempt ${attempt}/${maxAttempts}), retrying in ${delay}ms`,
+          );
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      } catch (err) {
+        if (attempt < maxAttempts) {
+          const delay = Math.min(5000 * 2 ** (attempt - 1), 30_000);
+          this.logger.warn(
+            `Compare API error for ${repoFullName}: ${err} (attempt ${attempt}/${maxAttempts}), retrying in ${delay}ms`,
+          );
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+    }
+
+    this.logger.warn(
+      `Compare API for ${repoFullName} failed after ${maxAttempts} attempts`,
+    );
+    return null;
+  }
+
   // --- GraphQL: closingIssuesReferences ---
 
   async fetchClosingIssueNumbers(
@@ -165,6 +222,20 @@ export class GitHubFetcherService implements OnModuleInit {
       throw new Error(`PR ${repoFullName}#${prNumber} not found in DB`);
     }
 
+    // Fetch and store the merge-base SHA. Needed for correct tree-diff
+    // scoring — differs from baseSha when base branch has advanced.
+    if (pr.baseSha && pr.headSha && !pr.mergeBaseSha) {
+      const mergeBaseSha = await this.fetchMergeBaseSha(
+        repoFullName,
+        pr.baseSha,
+        pr.headSha,
+      );
+      if (mergeBaseSha) {
+        await this.prRepo.update({ repoFullName, prNumber }, { mergeBaseSha });
+        pr.mergeBaseSha = mergeBaseSha;
+      }
+    }
+
     // 1. Fetch file list via REST
     const files = await this.fetchAllPrFiles(owner, repo, prNumber, token);
 
@@ -197,6 +268,11 @@ export class GitHubFetcherService implements OnModuleInit {
       return;
     }
 
+    // Prefer merge-base SHA (true common ancestor) over base SHA for
+    // fetching the "before" version of files. Falls back to base SHA if
+    // merge-base couldn't be resolved.
+    const baseForContents = pr.mergeBaseSha ?? pr.baseSha;
+
     await this.fetchAndStoreBatchedContents(
       repoFullName,
       prNumber,
@@ -205,7 +281,7 @@ export class GitHubFetcherService implements OnModuleInit {
       repo,
       token,
       pr.headSha,
-      pr.baseSha,
+      baseForContents,
     );
   }
 
