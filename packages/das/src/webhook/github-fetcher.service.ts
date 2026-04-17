@@ -182,6 +182,7 @@ export class GitHubFetcherService implements OnModuleInit {
           owner,
           repo,
           token,
+          pr.headSha,
           pr.baseSha,
         );
       }
@@ -231,17 +232,22 @@ export class GitHubFetcherService implements OnModuleInit {
     owner: string,
     repo: string,
     token: string,
+    headSha: string | null,
     baseSha: string | null,
   ): Promise<void> {
     try {
-      // Head version — the file contents as of this PR's head commit
-      const headContent = await this.fetchFileAtRef(
-        owner,
-        repo,
-        file.filename,
-        file.sha,
-        token,
-      );
+      // Head version — fetch at the PR's head commit SHA (not file.sha which is a blob SHA).
+      // The contents API needs a commit/branch/tag ref, not a blob SHA.
+      let headContent: string | null = null;
+      if (headSha) {
+        headContent = await this.fetchFileAtRef(
+          owner,
+          repo,
+          file.filename,
+          headSha,
+          token,
+        );
+      }
 
       // Base version — the file contents as of the PR's base commit.
       // For renames, use the previous filename. For "added" files, no base version exists.
