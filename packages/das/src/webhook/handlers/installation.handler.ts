@@ -1,8 +1,11 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-explicit-any */
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
+import { InjectQueue } from "@nestjs/bullmq";
 import { Repository } from "typeorm";
+import { Queue } from "bullmq";
 import { Repo } from "../../entities";
+import { FETCH_QUEUE, FETCH_JOBS } from "../../queue/constants";
 
 @Injectable()
 export class InstallationHandler {
@@ -11,6 +14,8 @@ export class InstallationHandler {
   constructor(
     @InjectRepository(Repo)
     private readonly repoRepo: Repository<Repo>,
+    @InjectQueue(FETCH_QUEUE)
+    private readonly fetchQueue: Queue,
   ) {}
 
   async handle(event: string, payload: Record<string, any>): Promise<void> {
@@ -45,6 +50,19 @@ export class InstallationHandler {
         ["repoFullName"],
       );
       this.logger.log(`Tracking repo: ${repo.full_name}`);
+
+      // Auto-enqueue backfill for newly installed repos
+      await this.fetchQueue.add(
+        FETCH_JOBS.BACKFILL_REPO,
+        { repoFullName: repo.full_name },
+        {
+          jobId: `backfill-${repo.full_name}`,
+          removeOnComplete: true,
+          removeOnFail: 50,
+          attempts: 2,
+          backoff: { type: "exponential", delay: 30_000 },
+        },
+      );
     }
 
     // installation_repositories.removed

@@ -5,7 +5,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { readFileSync } from "fs";
 import { sign } from "jsonwebtoken";
-import { PrFile, PrFileContent, PullRequest, Repo } from "../entities";
+import { Issue, PrFile, PrFileContent, PullRequest, Repo } from "../entities";
 
 interface InstallationToken {
   token: string;
@@ -27,6 +27,8 @@ export class GitHubFetcherService implements OnModuleInit {
     private readonly prFileContentRepo: Repository<PrFileContent>,
     @InjectRepository(PullRequest)
     private readonly prRepo: Repository<PullRequest>,
+    @InjectRepository(Issue)
+    private readonly issueRepo: Repository<Issue>,
     @InjectRepository(Repo)
     private readonly repoRepo: Repository<Repo>,
   ) {
@@ -334,5 +336,224 @@ export class GitHubFetcherService implements OnModuleInit {
     ];
     const lower = filename.toLowerCase();
     return binaryExts.some((ext) => lower.endsWith(ext));
+  }
+
+  // --- Backfill ---
+
+  /**
+   * Page through GraphQL for PRs in a repo created within the last N days.
+   * Upserts each PR. Returns the list of merged PR numbers so the caller can
+   * enqueue follow-up fetch jobs for diffs + closing issues.
+   */
+  async backfillPullRequests(
+    repoFullName: string,
+    sinceDate: Date,
+  ): Promise<{ prNumber: number; isMerged: boolean }[]> {
+    const [owner, repo] = repoFullName.split("/");
+    const token = await this.getTokenForRepo(repoFullName);
+
+    const query = `
+      query($owner: String!, $repo: String!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequests(
+            first: 50,
+            after: $cursor,
+            orderBy: {field: CREATED_AT, direction: DESC}
+          ) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              number
+              title
+              state
+              createdAt
+              closedAt
+              mergedAt
+              updatedAt
+              merged
+              author {
+                login
+                ... on User { databaseId }
+                ... on Bot { databaseId }
+              }
+              authorAssociation
+              mergedBy { login }
+              baseRef { name }
+              baseRefOid
+              headRefOid
+              additions
+              deletions
+              commits { totalCount }
+              labels(first: 20) { nodes { name } }
+            }
+          }
+        }
+      }
+    `;
+
+    const prs: { prNumber: number; isMerged: boolean }[] = [];
+    let cursor: string | null = null;
+
+    while (true) {
+      const res: Response = await fetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          variables: { owner, repo, cursor },
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(
+          `Backfill PR GraphQL failed: ${res.status} ${await res.text()}`,
+        );
+      }
+
+      const body: any = await res.json();
+      const page: any = body.data?.repository?.pullRequests;
+      if (!page) break;
+
+      let shouldStop = false;
+      for (const pr of page.nodes) {
+        // Ordered DESC by created_at — stop once we cross the cutoff
+        if (new Date(pr.createdAt) < sinceDate) {
+          shouldStop = true;
+          break;
+        }
+
+        await this.prRepo.upsert(
+          {
+            repoFullName,
+            prNumber: pr.number,
+            authorGithubId: String(pr.author?.databaseId ?? ""),
+            authorLogin: pr.author?.login ?? null,
+            authorAssociation: pr.authorAssociation ?? null,
+            title: pr.title,
+            state: pr.state, // OPEN / CLOSED / MERGED
+            createdAt: pr.createdAt,
+            closedAt: pr.closedAt ?? null,
+            mergedAt: pr.mergedAt ?? null,
+            lastEditedAt: pr.updatedAt ?? null,
+            mergedByLogin: pr.mergedBy?.login ?? null,
+            baseRef: pr.baseRef?.name ?? null,
+            headSha: pr.headRefOid ?? null,
+            baseSha: pr.baseRefOid ?? null,
+            additions: pr.additions ?? null,
+            deletions: pr.deletions ?? null,
+            commitsCount: pr.commits?.totalCount ?? null,
+            labels: (pr.labels?.nodes ?? []).map(
+              (l: { name: string }) => l.name,
+            ),
+          },
+          ["repoFullName", "prNumber"],
+        );
+
+        prs.push({ prNumber: pr.number, isMerged: !!pr.merged });
+      }
+
+      if (shouldStop || !page.pageInfo.hasNextPage) break;
+      cursor = page.pageInfo.endCursor;
+    }
+
+    return prs;
+  }
+
+  /**
+   * Page through GraphQL for issues in a repo created within the last N days.
+   * Upserts each issue.
+   */
+  async backfillIssues(repoFullName: string, sinceDate: Date): Promise<void> {
+    const [owner, repo] = repoFullName.split("/");
+    const token = await this.getTokenForRepo(repoFullName);
+
+    const query = `
+      query($owner: String!, $repo: String!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          issues(
+            first: 50,
+            after: $cursor,
+            orderBy: {field: CREATED_AT, direction: DESC}
+          ) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              number
+              title
+              state
+              stateReason
+              createdAt
+              closedAt
+              updatedAt
+              author {
+                login
+                ... on User { databaseId }
+                ... on Bot { databaseId }
+              }
+              authorAssociation
+              labels(first: 20) { nodes { name } }
+            }
+          }
+        }
+      }
+    `;
+
+    let cursor: string | null = null;
+
+    while (true) {
+      const res: Response = await fetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          variables: { owner, repo, cursor },
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(
+          `Backfill issue GraphQL failed: ${res.status} ${await res.text()}`,
+        );
+      }
+
+      const body: any = await res.json();
+      const page: any = body.data?.repository?.issues;
+      if (!page) break;
+
+      let shouldStop = false;
+      for (const issue of page.nodes) {
+        if (new Date(issue.createdAt) < sinceDate) {
+          shouldStop = true;
+          break;
+        }
+
+        await this.issueRepo.upsert(
+          {
+            repoFullName,
+            issueNumber: issue.number,
+            authorGithubId: String(issue.author?.databaseId ?? ""),
+            authorLogin: issue.author?.login ?? null,
+            authorAssociation: issue.authorAssociation ?? null,
+            title: issue.title,
+            state: issue.state, // OPEN / CLOSED
+            stateReason: issue.stateReason ?? null,
+            createdAt: issue.createdAt,
+            closedAt: issue.closedAt ?? null,
+            updatedAt: issue.updatedAt ?? null,
+            labels: (issue.labels?.nodes ?? []).map(
+              (l: { name: string }) => l.name,
+            ),
+          },
+          ["repoFullName", "issueNumber"],
+        );
+      }
+
+      if (shouldStop || !page.pageInfo.hasNextPage) break;
+      cursor = page.pageInfo.endCursor;
+    }
   }
 }

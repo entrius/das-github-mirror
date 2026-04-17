@@ -1,11 +1,11 @@
-import { Processor, WorkerHost } from "@nestjs/bullmq";
+import { Processor, WorkerHost, InjectQueue } from "@nestjs/bullmq";
 import { Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { Job } from "bullmq";
+import { Job, Queue } from "bullmq";
 import { Issue, PullRequest } from "../entities";
 import { GitHubFetcherService } from "../webhook/github-fetcher.service";
-import { FETCH_QUEUE, FETCH_JOBS } from "./constants";
+import { FETCH_QUEUE, FETCH_JOBS, DEFAULT_BACKFILL_DAYS } from "./constants";
 
 export interface ClosingIssuesJobData {
   repoFullName: string;
@@ -17,6 +17,13 @@ export interface PrFilesJobData {
   prNumber: number;
 }
 
+export interface BackfillRepoJobData {
+  repoFullName: string;
+  days?: number;
+}
+
+type JobData = ClosingIssuesJobData | PrFilesJobData | BackfillRepoJobData;
+
 @Processor(FETCH_QUEUE, { concurrency: 5 })
 export class FetchProcessor extends WorkerHost {
   private readonly logger = new Logger(FetchProcessor.name);
@@ -27,22 +34,29 @@ export class FetchProcessor extends WorkerHost {
     private readonly prRepo: Repository<PullRequest>,
     @InjectRepository(Issue)
     private readonly issueRepo: Repository<Issue>,
+    @InjectQueue(FETCH_QUEUE)
+    private readonly fetchQueue: Queue,
   ) {
     super();
   }
 
-  async process(
-    job: Job<ClosingIssuesJobData | PrFilesJobData>,
-  ): Promise<void> {
-    const { repoFullName, prNumber } = job.data;
-
+  async process(job: Job<JobData>): Promise<void> {
     switch (job.name) {
-      case FETCH_JOBS.CLOSING_ISSUES:
+      case FETCH_JOBS.CLOSING_ISSUES: {
+        const { repoFullName, prNumber } = job.data as ClosingIssuesJobData;
         await this.handleClosingIssues(repoFullName, prNumber);
         break;
-      case FETCH_JOBS.PR_FILES:
+      }
+      case FETCH_JOBS.PR_FILES: {
+        const { repoFullName, prNumber } = job.data as PrFilesJobData;
         await this.handlePrFiles(repoFullName, prNumber);
         break;
+      }
+      case FETCH_JOBS.BACKFILL_REPO: {
+        const { repoFullName, days } = job.data as BackfillRepoJobData;
+        await this.handleBackfill(repoFullName, days ?? DEFAULT_BACKFILL_DAYS);
+        break;
+      }
       default:
         this.logger.warn(`Unknown job name: ${job.name}`);
     }
@@ -66,7 +80,7 @@ export class FetchProcessor extends WorkerHost {
       { closingIssueNumbers: issueNumbers },
     );
 
-    // Check if this PR is merged — if so, set solved_by_pr on each linked issue
+    // If this PR is merged, mark each linked issue as solved_by_pr
     const pr = await this.prRepo.findOneBy({ repoFullName, prNumber });
     if (pr?.state === "MERGED" && issueNumbers.length > 0) {
       for (const issueNumber of issueNumbers) {
@@ -90,5 +104,54 @@ export class FetchProcessor extends WorkerHost {
       { repoFullName, prNumber },
       { scoringDataStored: true },
     );
+  }
+
+  private async handleBackfill(
+    repoFullName: string,
+    days: number,
+  ): Promise<void> {
+    this.logger.log(`Backfilling ${repoFullName} — last ${days} days`);
+
+    const sinceDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    // Fetch and upsert PRs
+    const prs = await this.fetcher.backfillPullRequests(
+      repoFullName,
+      sinceDate,
+    );
+    this.logger.log(`Backfilled ${prs.length} PRs from ${repoFullName}`);
+
+    // Enqueue follow-up jobs (closing issues for all, files for merged)
+    for (const { prNumber, isMerged } of prs) {
+      await this.fetchQueue.add(
+        FETCH_JOBS.CLOSING_ISSUES,
+        { repoFullName, prNumber },
+        {
+          jobId: `closing-${repoFullName}-${prNumber}`,
+          removeOnComplete: true,
+          removeOnFail: 50,
+          attempts: 3,
+          backoff: { type: "exponential", delay: 5000 },
+        },
+      );
+
+      if (isMerged) {
+        await this.fetchQueue.add(
+          FETCH_JOBS.PR_FILES,
+          { repoFullName, prNumber },
+          {
+            jobId: `files-${repoFullName}-${prNumber}`,
+            removeOnComplete: true,
+            removeOnFail: 50,
+            attempts: 3,
+            backoff: { type: "exponential", delay: 5000 },
+          },
+        );
+      }
+    }
+
+    // Fetch and upsert issues
+    await this.fetcher.backfillIssues(repoFullName, sinceDate);
+    this.logger.log(`Backfilled issues from ${repoFullName}`);
   }
 }
