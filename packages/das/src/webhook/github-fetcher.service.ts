@@ -7,6 +7,7 @@ import { readFileSync } from "fs";
 import { sign } from "jsonwebtoken";
 import {
   Issue,
+  LabelEvent,
   PrFile,
   PrFileContent,
   PullRequest,
@@ -44,6 +45,8 @@ export class GitHubFetcherService implements OnModuleInit {
     private readonly issueRepo: Repository<Issue>,
     @InjectRepository(Review)
     private readonly reviewRepo: Repository<Review>,
+    @InjectRepository(LabelEvent)
+    private readonly labelEventRepo: Repository<LabelEvent>,
     @InjectRepository(Repo)
     private readonly repoRepo: Repository<Repo>,
   ) {
@@ -589,6 +592,30 @@ export class GitHubFetcherService implements OnModuleInit {
                   }
                 }
               }
+              timelineItems(
+                itemTypes: [LABELED_EVENT, UNLABELED_EVENT]
+                first: 30
+              ) {
+                nodes {
+                  __typename
+                  ... on LabeledEvent {
+                    createdAt
+                    label { name }
+                    actor {
+                      login
+                      ... on User { databaseId }
+                    }
+                  }
+                  ... on UnlabeledEvent {
+                    createdAt
+                    label { name }
+                    actor {
+                      login
+                      ... on User { databaseId }
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -675,6 +702,14 @@ export class GitHubFetcherService implements OnModuleInit {
           );
         }
 
+        // Upsert label events (LABELED_EVENT / UNLABELED_EVENT)
+        await this.saveLabelTimelineEvents(
+          repoFullName,
+          pr.number,
+          "pr",
+          pr.timelineItems?.nodes ?? [],
+        );
+
         prs.push({ prNumber: pr.number, isMerged: !!pr.merged });
       }
 
@@ -716,7 +751,31 @@ export class GitHubFetcherService implements OnModuleInit {
                 ... on Bot { databaseId }
               }
               authorAssociation
-              labels(first: 20) { nodes { name } }
+              labels(first: 10) { nodes { name } }
+              timelineItems(
+                itemTypes: [LABELED_EVENT, UNLABELED_EVENT]
+                first: 30
+              ) {
+                nodes {
+                  __typename
+                  ... on LabeledEvent {
+                    createdAt
+                    label { name }
+                    actor {
+                      login
+                      ... on User { databaseId }
+                    }
+                  }
+                  ... on UnlabeledEvent {
+                    createdAt
+                    label { name }
+                    actor {
+                      login
+                      ... on User { databaseId }
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -774,10 +833,52 @@ export class GitHubFetcherService implements OnModuleInit {
           },
           ["repoFullName", "issueNumber"],
         );
+
+        // Upsert label events for this issue
+        await this.saveLabelTimelineEvents(
+          repoFullName,
+          issue.number,
+          "issue",
+          issue.timelineItems?.nodes ?? [],
+        );
       }
 
       if (shouldStop || !page.pageInfo.hasNextPage) break;
       cursor = page.pageInfo.endCursor;
+    }
+  }
+
+  /**
+   * Upsert a list of LABELED_EVENT / UNLABELED_EVENT timeline nodes into
+   * the label_events table. The GraphQL actor type doesn't expose
+   * authorAssociation, so actor_association is left null on backfill —
+   * labels on GitHub require triage+ access anyway, so the last label
+   * is treated as authoritative by scoring.
+   */
+  private async saveLabelTimelineEvents(
+    repoFullName: string,
+    targetNumber: number,
+    targetType: "pr" | "issue",
+    nodes: any[],
+  ): Promise<void> {
+    for (const node of nodes) {
+      if (!node || !node.label?.name || !node.createdAt) continue;
+      const action =
+        node.__typename === "LabeledEvent" ? "labeled" : "unlabeled";
+
+      await this.labelEventRepo.save({
+        repoFullName,
+        targetNumber,
+        targetType,
+        labelName: node.label.name,
+        action,
+        actorGithubId: node.actor?.databaseId
+          ? String(node.actor.databaseId)
+          : null,
+        actorLogin: node.actor?.login ?? null,
+        actorAssociation: null,
+        timestamp: node.createdAt,
+      });
     }
   }
 }

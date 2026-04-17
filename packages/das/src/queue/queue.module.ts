@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import {
   Issue,
+  LabelEvent,
   PrFile,
   PrFileContent,
   PullRequest,
@@ -29,6 +30,7 @@ import { FETCH_QUEUE } from "./constants";
     BullModule.registerQueue({ name: FETCH_QUEUE }),
     TypeOrmModule.forFeature([
       Issue,
+      LabelEvent,
       PullRequest,
       PrFile,
       PrFileContent,
