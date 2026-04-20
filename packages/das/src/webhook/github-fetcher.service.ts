@@ -835,6 +835,7 @@ export class GitHubFetcherService implements OnModuleInit {
               createdAt
               closedAt
               updatedAt
+              lastEditedAt
               author {
                 login
                 ... on User { databaseId }
@@ -920,6 +921,7 @@ export class GitHubFetcherService implements OnModuleInit {
             createdAt: issue.createdAt,
             closedAt: issue.closedAt ?? null,
             updatedAt: issue.updatedAt ?? null,
+            lastEditedAt: issue.lastEditedAt ?? null,
             labels: (issue.labels?.nodes ?? []).map(
               (l: { name: string }) => l.name,
             ),

@@ -35,6 +35,14 @@ export class IssueHandler {
       labels: (issue.labels ?? []).map((l: any) => l.name),
     };
 
+    // The `edited` action fires specifically for body or title changes.
+    // Use the webhook's updated_at as the precise edit timestamp — for
+    // other actions (labeled, closed, commented, etc.) don't touch
+    // last_edited_at so it only reflects actual body/title edits.
+    if (payload.action === "edited") {
+      data.lastEditedAt = issue.updated_at ?? null;
+    }
+
     await this.issueRepo.upsert(data, ["repoFullName", "issueNumber"]);
 
     await this.repoRepo.update(repoFullName, {

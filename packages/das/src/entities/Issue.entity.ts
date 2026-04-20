@@ -35,6 +35,9 @@ export class Issue {
   @Column({ name: "updated_at", type: "timestamp", nullable: true })
   updatedAt: string;
 
+  @Column({ name: "last_edited_at", type: "timestamp", nullable: true })
+  lastEditedAt: string | null;
+
   @Column({ type: "text", array: true, nullable: true })
   labels: string[] | null;
 

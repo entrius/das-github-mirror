@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS issues (
     created_at          TIMESTAMP       NOT NULL,
     closed_at           TIMESTAMP,
     updated_at          TIMESTAMP,
+    last_edited_at      TIMESTAMP,
     labels              TEXT[],
     solved_by_pr        INTEGER,
     is_transferred      BOOLEAN         NOT NULL DEFAULT FALSE,

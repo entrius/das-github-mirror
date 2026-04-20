@@ -134,6 +134,7 @@ export class MinersService {
         i.created_at,
         i.closed_at,
         i.updated_at,
+        i.last_edited_at,
         i.is_transferred,
         i.solved_by_pr,
         COALESCE((
