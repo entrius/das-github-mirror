@@ -1,18 +1,9 @@
-import {
-  Controller,
-  Get,
-  Param,
-  ParseIntPipe,
-  UseGuards,
-} from "@nestjs/common";
-import { ApiOperation, ApiParam, ApiSecurity, ApiTags } from "@nestjs/swagger";
-import { ApiKeyGuard } from "../api-key.guard";
+import { Controller, Get, Param, ParseIntPipe } from "@nestjs/common";
+import { ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
 import { NoCache } from "../../cache";
 import { PullsService } from "./pulls.service";
 
 @ApiTags("Pulls")
-@ApiSecurity("api-key")
-@UseGuards(ApiKeyGuard)
 @Controller("api/v1/pulls")
 export class PullsController {
   constructor(private readonly pulls: PullsService) {}

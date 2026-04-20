@@ -1,17 +1,8 @@
-import { Controller, Get, Param, Query, UseGuards } from "@nestjs/common";
-import {
-  ApiOperation,
-  ApiParam,
-  ApiQuery,
-  ApiSecurity,
-  ApiTags,
-} from "@nestjs/swagger";
-import { ApiKeyGuard } from "../api-key.guard";
+import { Controller, Get, Param, Query } from "@nestjs/common";
+import { ApiOperation, ApiParam, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { MinersService } from "./miners.service";
 
 @ApiTags("Miners")
-@ApiSecurity("api-key")
-@UseGuards(ApiKeyGuard)
 @Controller("api/v1/miners")
 export class MinersController {
   constructor(private readonly miners: MinersService) {}

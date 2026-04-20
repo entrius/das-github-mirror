@@ -1,6 +1,5 @@
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
-import { ThrottlerModule } from "@nestjs/throttler";
 import { BullModule } from "@nestjs/bullmq";
 import {
   Repo,
@@ -12,7 +11,6 @@ import {
 } from "../entities";
 import { FETCH_QUEUE } from "../queue/constants";
 import { AdminController } from "./admin.controller";
-import { ApiKeyGuard } from "./api-key.guard";
 import { RequireApiKeyGuard } from "./require-api-key.guard";
 import { HealthController } from "./health.controller";
 import { MinersController } from "./miners/miners.controller";
@@ -31,15 +29,6 @@ import { PullsService } from "./pulls/pulls.service";
       LabelEvent,
     ]),
     BullModule.registerQueue({ name: FETCH_QUEUE }),
-    // Strict per-IP limit for anonymous callers; bypassed by ApiKeyGuard
-    // when a valid x-api-key is presented.
-    ThrottlerModule.forRoot([
-      {
-        name: "default",
-        ttl: 60_000, // 1 minute
-        limit: 30, // 30 requests per IP per minute
-      },
-    ]),
   ],
   controllers: [
     MinersController,
@@ -47,6 +36,6 @@ import { PullsService } from "./pulls/pulls.service";
     AdminController,
     HealthController,
   ],
-  providers: [MinersService, PullsService, ApiKeyGuard, RequireApiKeyGuard],
+  providers: [MinersService, PullsService, RequireApiKeyGuard],
 })
 export class ApiModule {}
