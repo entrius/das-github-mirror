@@ -54,25 +54,4 @@ export class MinersController {
   ): Promise<unknown> {
     return this.miners.getIssues(githubId, MinersService.resolveSince(since));
   }
-
-  @Get(":githubId/counts")
-  @ApiOperation({
-    summary: "Aggregated PR and issue counts per repo for a miner",
-    description:
-      "Credibility and eligibility inputs: merged/closed/open PR counts " +
-      "(with earliest merge for pioneer ordering) and closed/open issue " +
-      "counts, grouped by repo, over a configurable lookback window.",
-  })
-  @ApiParam({ name: "githubId", description: "GitHub user ID (numeric)" })
-  @ApiQuery({
-    name: "days",
-    required: false,
-    description: "Lookback in days. Defaults to 35.",
-  })
-  async getCounts(
-    @Param("githubId") githubId: string,
-    @Query("days") days?: string,
-  ): Promise<unknown> {
-    return this.miners.getCounts(githubId, Number(days) || 35);
-  }
 }

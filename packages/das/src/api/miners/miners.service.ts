@@ -145,7 +145,46 @@ export class MinersService {
           FROM issue_labels_by_actor ilt
           WHERE ilt.repo_full_name = i.repo_full_name
             AND ilt.issue_number   = i.issue_number
-        ), '[]'::json) AS labels
+        ), '[]'::json) AS labels,
+        (
+          SELECT json_build_object(
+            'pr_number',         sp.pr_number,
+            'author_github_id',  sp.author_github_id,
+            'state',             sp.state,
+            'merged_at',         sp.merged_at,
+            'hours_since_merge',
+              CASE WHEN sp.merged_at IS NOT NULL
+                THEN EXTRACT(EPOCH FROM (NOW() - sp.merged_at)) / 3600.0
+                ELSE NULL END,
+            'edited_after_merge',
+              (sp.last_edited_at IS NOT NULL
+                AND sp.merged_at IS NOT NULL
+                AND sp.last_edited_at > sp.merged_at),
+            'head_sha',          sp.head_sha,
+            'base_sha',          sp.base_sha,
+            'merge_base_sha',    sp.merge_base_sha,
+            'labels', COALESCE((
+              SELECT json_agg(json_build_object(
+                'name',              plt.label_name,
+                'actor_github_id',   plt.actor_github_id,
+                'actor_association', plt.actor_association
+              ))
+              FROM pr_labels_by_actor plt
+              WHERE plt.repo_full_name = sp.repo_full_name
+                AND plt.pr_number      = sp.pr_number
+            ), '[]'::json),
+            'review_summary', json_build_object(
+              'maintainer_changes_requested_count',
+                COALESCE(rs.maintainer_changes_requested_count, 0)
+            )
+          )
+          FROM pull_requests sp
+          LEFT JOIN pr_review_summary rs
+            ON rs.repo_full_name = sp.repo_full_name
+           AND rs.pr_number      = sp.pr_number
+          WHERE sp.repo_full_name = i.repo_full_name
+            AND sp.pr_number      = i.solved_by_pr
+        ) AS solving_pr
       FROM issues i
       WHERE i.author_github_id = $1
         AND i.created_at       >= $2
@@ -159,79 +198,6 @@ export class MinersService {
       since,
       generated_at: new Date().toISOString(),
       issues: rows,
-    };
-  }
-
-  async getCounts(
-    githubId: string,
-    days: number,
-  ): Promise<{
-    github_id: string;
-    days: number;
-    generated_at: string;
-    by_repo: unknown[];
-  }> {
-    const sinceDate = new Date();
-    sinceDate.setDate(sinceDate.getDate() - days);
-
-    const rows = await this.dataSource.query(
-      `
-      SELECT
-        repo,
-        json_build_object(
-          'merged',            COALESCE((prs->>'merged')::int, 0),
-          'closed',            COALESCE((prs->>'closed')::int, 0),
-          'open',              COALESCE((prs->>'open')::int, 0),
-          'earliest_merge_at', prs->>'earliest_merge_at'
-        ) AS prs,
-        json_build_object(
-          'closed', COALESCE((issues->>'closed')::int, 0),
-          'open',   COALESCE((issues->>'open')::int, 0)
-        ) AS issues
-      FROM (
-        SELECT
-          COALESCE(p.repo_full_name, i.repo_full_name) AS repo,
-          json_build_object(
-            'merged',            p.merged_count,
-            'closed',            p.closed_count,
-            'open',              p.open_count,
-            'earliest_merge_at', p.earliest_merge_at
-          ) AS prs,
-          json_build_object(
-            'closed', i.closed_count,
-            'open',   i.open_count
-          ) AS issues
-        FROM (
-          SELECT
-            repo_full_name,
-            COUNT(*) FILTER (WHERE state = 'MERGED') AS merged_count,
-            COUNT(*) FILTER (WHERE state = 'CLOSED') AS closed_count,
-            COUNT(*) FILTER (WHERE state = 'OPEN')   AS open_count,
-            MIN(merged_at) FILTER (WHERE state = 'MERGED') AS earliest_merge_at
-          FROM pull_requests
-          WHERE author_github_id = $1 AND created_at >= $2
-          GROUP BY repo_full_name
-        ) p
-        FULL OUTER JOIN (
-          SELECT
-            repo_full_name,
-            COUNT(*) FILTER (WHERE state = 'CLOSED') AS closed_count,
-            COUNT(*) FILTER (WHERE state = 'OPEN')   AS open_count
-          FROM issues
-          WHERE author_github_id = $1 AND created_at >= $2
-          GROUP BY repo_full_name
-        ) i ON i.repo_full_name = p.repo_full_name
-      ) combined
-      ORDER BY repo
-      `,
-      [githubId, sinceDate],
-    );
-
-    return {
-      github_id: githubId,
-      days,
-      generated_at: new Date().toISOString(),
-      by_repo: rows,
     };
   }
 
