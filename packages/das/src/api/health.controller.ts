@@ -4,6 +4,7 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
 import { DataSource, Repository } from "typeorm";
+import { NoCache } from "../cache";
 import { Repo } from "../entities";
 import { FETCH_QUEUE } from "../queue/constants";
 
@@ -38,6 +39,7 @@ export class HealthController {
   ) {}
 
   @Get()
+  @NoCache()
   @ApiOperation({
     summary: "Public health check",
     description:
