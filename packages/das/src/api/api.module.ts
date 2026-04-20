@@ -14,9 +14,9 @@ import { FETCH_QUEUE } from "../queue/constants";
 import { AdminController } from "./admin.controller";
 import { ApiKeyGuard } from "./api-key.guard";
 import { RequireApiKeyGuard } from "./require-api-key.guard";
-import { ContributorsController } from "./contributors.controller";
-import { ContributorsService } from "./contributors.service";
 import { HealthController } from "./health.controller";
+import { MinersController } from "./miners/miners.controller";
+import { MinersService } from "./miners/miners.service";
 
 @Module({
   imports: [
@@ -39,7 +39,7 @@ import { HealthController } from "./health.controller";
       },
     ]),
   ],
-  controllers: [ContributorsController, AdminController, HealthController],
-  providers: [ContributorsService, ApiKeyGuard, RequireApiKeyGuard],
+  controllers: [MinersController, AdminController, HealthController],
+  providers: [MinersService, ApiKeyGuard, RequireApiKeyGuard],
 })
 export class ApiModule {}
