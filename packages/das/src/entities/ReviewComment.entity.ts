@@ -32,9 +32,9 @@ export class ReviewComment {
   @Column({ type: "text", nullable: true })
   body: string;
 
-  @Column({ name: "created_at", type: "timestamp" })
+  @Column({ name: "created_at", type: "timestamptz" })
   createdAt: string;
 
-  @Column({ name: "updated_at", type: "timestamp", nullable: true })
+  @Column({ name: "updated_at", type: "timestamptz", nullable: true })
   updatedAt: string;
 }

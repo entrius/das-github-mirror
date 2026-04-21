@@ -26,16 +26,16 @@ export class PullRequest {
   @Column()
   state: string;
 
-  @Column({ name: "created_at", type: "timestamp" })
+  @Column({ name: "created_at", type: "timestamptz" })
   createdAt: string;
 
-  @Column({ name: "closed_at", type: "timestamp", nullable: true })
+  @Column({ name: "closed_at", type: "timestamptz", nullable: true })
   closedAt: string;
 
-  @Column({ name: "merged_at", type: "timestamp", nullable: true })
+  @Column({ name: "merged_at", type: "timestamptz", nullable: true })
   mergedAt: string;
 
-  @Column({ name: "last_edited_at", type: "timestamp", nullable: true })
+  @Column({ name: "last_edited_at", type: "timestamptz", nullable: true })
   lastEditedAt: string | null;
 
   @Column({ name: "merged_by_login", nullable: true })

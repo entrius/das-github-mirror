@@ -13,8 +13,8 @@ CREATE TABLE IF NOT EXISTS review_comments (
     line                INTEGER,
     side                VARCHAR(5),
     body                TEXT,
-    created_at          TIMESTAMP       NOT NULL,
-    updated_at          TIMESTAMP,
+    created_at          TIMESTAMPTZ       NOT NULL,
+    updated_at          TIMESTAMPTZ,
 
     PRIMARY KEY (repo_full_name, comment_id)
 );

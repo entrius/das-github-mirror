@@ -28,7 +28,7 @@ export class IssueHandler {
       authorAssociation: issue.author_association,
       title: issue.title ?? null,
       state: issue.state.toUpperCase(),
-      stateReason: issue.state_reason ?? null,
+      stateReason: issue.state_reason?.toUpperCase() ?? null,
       createdAt: issue.created_at,
       closedAt: issue.closed_at ?? null,
       updatedAt: issue.updated_at ?? null,

@@ -11,7 +11,7 @@ export class Review {
   @PrimaryColumn({ name: "reviewer_github_id" })
   reviewerGithubId: string;
 
-  @PrimaryColumn({ name: "submitted_at", type: "timestamp" })
+  @PrimaryColumn({ name: "submitted_at", type: "timestamptz" })
   submittedAt: string;
 
   @Column({ name: "reviewer_login", nullable: true })

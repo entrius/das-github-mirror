@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     reviewer_login          VARCHAR(255),
     reviewer_association    VARCHAR(20),
     review_state            VARCHAR(30)     NOT NULL,
-    submitted_at            TIMESTAMP       NOT NULL,
+    submitted_at            TIMESTAMPTZ     NOT NULL,
 
     PRIMARY KEY (repo_full_name, pr_number, reviewer_github_id, submitted_at)
 );

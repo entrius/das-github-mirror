@@ -5,6 +5,6 @@ export class WebhookDelivery {
   @PrimaryColumn({ name: "delivery_id" })
   deliveryId: string;
 
-  @Column({ name: "received_at", type: "timestamp" })
+  @Column({ name: "received_at", type: "timestamptz" })
   receivedAt: string;
 }

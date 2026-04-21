@@ -12,8 +12,8 @@ CREATE TABLE IF NOT EXISTS comments (
     author_login        VARCHAR(255),
     author_association  VARCHAR(20),
     body                TEXT,
-    created_at          TIMESTAMP       NOT NULL,
-    updated_at          TIMESTAMP,
+    created_at          TIMESTAMPTZ       NOT NULL,
+    updated_at          TIMESTAMPTZ,
 
     PRIMARY KEY (repo_full_name, comment_id)
 );

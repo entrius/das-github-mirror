@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS label_events (
     actor_github_id     VARCHAR(255),
     actor_login         VARCHAR(255),
     actor_association   VARCHAR(20),
-    timestamp           TIMESTAMP       NOT NULL
+    timestamp           TIMESTAMPTZ     NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_label_events_target ON label_events(repo_full_name, target_number, timestamp);

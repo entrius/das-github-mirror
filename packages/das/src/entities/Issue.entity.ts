@@ -26,16 +26,16 @@ export class Issue {
   @Column({ name: "state_reason", type: "varchar", nullable: true })
   stateReason: string | null;
 
-  @Column({ name: "created_at", type: "timestamp" })
+  @Column({ name: "created_at", type: "timestamptz" })
   createdAt: string;
 
-  @Column({ name: "closed_at", type: "timestamp", nullable: true })
+  @Column({ name: "closed_at", type: "timestamptz", nullable: true })
   closedAt: string;
 
-  @Column({ name: "updated_at", type: "timestamp", nullable: true })
+  @Column({ name: "updated_at", type: "timestamptz", nullable: true })
   updatedAt: string;
 
-  @Column({ name: "last_edited_at", type: "timestamp", nullable: true })
+  @Column({ name: "last_edited_at", type: "timestamptz", nullable: true })
   lastEditedAt: string | null;
 
   @Column({ type: "text", array: true, nullable: true })

@@ -11,9 +11,9 @@ export class Repo {
   @Column({ name: "webhook_secret", type: "varchar", nullable: true })
   webhookSecret: string | null;
 
-  @Column({ name: "added_at", type: "timestamp" })
+  @Column({ name: "added_at", type: "timestamptz" })
   addedAt: string;
 
-  @Column({ name: "last_event_at", type: "timestamp", nullable: true })
+  @Column({ name: "last_event_at", type: "timestamptz", nullable: true })
   lastEventAt: string | null;
 }

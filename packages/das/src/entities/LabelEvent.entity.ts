@@ -29,6 +29,6 @@ export class LabelEvent {
   @Column({ name: "actor_association", type: "varchar", nullable: true })
   actorAssociation: string | null;
 
-  @Column({ type: "timestamp" })
+  @Column({ type: "timestamptz" })
   timestamp: string;
 }
