@@ -45,7 +45,9 @@ export class MinersService {
           AS edited_after_merge,
         CASE
           WHEN p.merged_at IS NOT NULL
-            THEN EXTRACT(EPOCH FROM (NOW() - p.merged_at)) / 3600.0
+            THEN ROUND(
+              (EXTRACT(EPOCH FROM (NOW() - p.merged_at)) / 3600.0)::numeric, 2
+            )::float8
           ELSE NULL
         END AS hours_since_merge,
         json_build_object(
@@ -155,7 +157,9 @@ export class MinersService {
             'merged_at',         sp.merged_at,
             'hours_since_merge',
               CASE WHEN sp.merged_at IS NOT NULL
-                THEN EXTRACT(EPOCH FROM (NOW() - sp.merged_at)) / 3600.0
+                THEN ROUND(
+                  (EXTRACT(EPOCH FROM (NOW() - sp.merged_at)) / 3600.0)::numeric, 2
+                )::float8
                 ELSE NULL END,
             'edited_after_merge',
               (sp.last_edited_at IS NOT NULL
