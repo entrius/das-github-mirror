@@ -19,4 +19,7 @@ export class Repo {
 
   @Column({ name: "default_branch", type: "varchar", nullable: true })
   defaultBranch: string | null;
+
+  @Column({ name: "registered", type: "boolean" })
+  registered: boolean;
 }

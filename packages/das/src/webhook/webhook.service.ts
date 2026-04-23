@@ -2,7 +2,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { WebhookDelivery } from "../entities";
+import { Repo, WebhookDelivery } from "../entities";
 import { PullRequestHandler } from "./handlers/pull-request.handler";
 import { IssueHandler } from "./handlers/issue.handler";
 import { ReviewHandler } from "./handlers/review.handler";
@@ -18,6 +18,8 @@ export class WebhookService {
   constructor(
     @InjectRepository(WebhookDelivery)
     private readonly deliveryRepo: Repository<WebhookDelivery>,
+    @InjectRepository(Repo)
+    private readonly repoRepo: Repository<Repo>,
     private readonly pullRequestHandler: PullRequestHandler,
     private readonly issueHandler: IssueHandler,
     private readonly reviewHandler: ReviewHandler,
@@ -49,6 +51,23 @@ export class WebhookService {
       `${event}.${payload.action ?? "unknown"} → ${repoFullName ?? "no-repo"} [${deliveryId}]`,
     );
 
+    // Installation events always run — they create/update the Repo row itself.
+    if (event === "installation" || event === "installation_repositories") {
+      await this.installationHandler.handle(event, payload);
+      return;
+    }
+
+    // All other events carry repo context and only persist data for registered repos.
+    if (repoFullName) {
+      const repo = await this.repoRepo.findOneBy({ repoFullName });
+      if (!repo?.registered) {
+        this.logger.log(
+          `Skipping ${event}: repo ${repoFullName} not registered`,
+        );
+        return;
+      }
+    }
+
     switch (event) {
       case "pull_request":
         await this.pullRequestHandler.handle(payload);
@@ -73,10 +92,6 @@ export class WebhookService {
         break;
       case "label":
         // Repo-level label CRUD — not used for scoring, skip
-        break;
-      case "installation":
-      case "installation_repositories":
-        await this.installationHandler.handle(event, payload);
         break;
       default:
         this.logger.debug(`Unhandled event type: ${event}`);
