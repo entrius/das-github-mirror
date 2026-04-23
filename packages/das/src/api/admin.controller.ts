@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   NotFoundException,
@@ -21,6 +22,29 @@ interface BackfillBody {
 
 interface RegisterBody {
   repoFullName: string;
+}
+
+// GitHub owner/repo pattern: alphanum + `.`, `_`, `-`, length reasonable.
+const REPO_FULL_NAME_PATTERN = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
+
+function validateRepoFullName(value: unknown): string {
+  if (typeof value !== "string" || !REPO_FULL_NAME_PATTERN.test(value)) {
+    throw new BadRequestException(
+      'repoFullName must match "owner/repo" (alphanumerics, dot, dash, underscore)',
+    );
+  }
+  return value;
+}
+
+function validateDays(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new BadRequestException("days must be a positive number");
+  }
+  if (value > 365) {
+    throw new BadRequestException("days must be <= 365");
+  }
+  return Math.floor(value);
 }
 
 @ApiTags("Admin")
@@ -57,11 +81,14 @@ export class AdminController {
     repoFullName: string;
     days: number | undefined;
   }> {
+    const repoFullName = validateRepoFullName(body?.repoFullName);
+    const days = validateDays(body?.days);
+
     await this.fetchQueue.add(
       FETCH_JOBS.BACKFILL_REPO,
-      { repoFullName: body.repoFullName, days: body.days },
+      { repoFullName, days },
       {
-        jobId: `backfill-${body.repoFullName}-${Date.now()}`,
+        jobId: `backfill-${repoFullName}-${Date.now()}`,
         removeOnComplete: true,
         removeOnFail: 50,
         attempts: 2,
@@ -69,11 +96,7 @@ export class AdminController {
       },
     );
 
-    return {
-      enqueued: true,
-      repoFullName: body.repoFullName,
-      days: body.days,
-    };
+    return { enqueued: true, repoFullName, days };
   }
 
   @Post("repos/register")
@@ -98,22 +121,24 @@ export class AdminController {
     registered: true;
     backfillEnqueued: boolean;
   }> {
+    const repoFullName = validateRepoFullName(body?.repoFullName);
+
     const result = await this.repoRepo.update(
-      { repoFullName: body.repoFullName },
+      { repoFullName },
       { registered: true },
     );
 
     if (!result.affected) {
       throw new NotFoundException(
-        `Repo ${body.repoFullName} not found — install the GitHub App first`,
+        `Repo ${repoFullName} not found — install the GitHub App first`,
       );
     }
 
     await this.fetchQueue.add(
       FETCH_JOBS.BACKFILL_REPO,
-      { repoFullName: body.repoFullName },
+      { repoFullName },
       {
-        jobId: `backfill-${body.repoFullName}-${Date.now()}`,
+        jobId: `backfill-${repoFullName}-${Date.now()}`,
         removeOnComplete: true,
         removeOnFail: 50,
         attempts: 2,
@@ -121,10 +146,6 @@ export class AdminController {
       },
     );
 
-    return {
-      repoFullName: body.repoFullName,
-      registered: true,
-      backfillEnqueued: true,
-    };
+    return { repoFullName, registered: true, backfillEnqueued: true };
   }
 }

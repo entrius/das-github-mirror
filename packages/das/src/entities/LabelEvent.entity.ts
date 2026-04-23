@@ -26,9 +26,6 @@ export class LabelEvent {
   @Column({ name: "actor_login", type: "varchar", nullable: true })
   actorLogin: string | null;
 
-  @Column({ name: "actor_association", type: "varchar", nullable: true })
-  actorAssociation: string | null;
-
   @Column({ type: "timestamptz" })
   timestamp: string;
 }

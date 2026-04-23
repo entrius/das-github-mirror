@@ -9,11 +9,11 @@ import {
   Comment,
   ReviewComment,
   LabelEvent,
-  WebhookDelivery,
 } from "../entities";
 import { FETCH_QUEUE } from "../queue/constants";
 import { WebhookController } from "./webhook.controller";
 import { WebhookService } from "./webhook.service";
+import { WebhookPruneService } from "./webhook-prune.service";
 import { PullRequestHandler } from "./handlers/pull-request.handler";
 import { IssueHandler } from "./handlers/issue.handler";
 import { ReviewHandler } from "./handlers/review.handler";
@@ -32,13 +32,13 @@ import { InstallationHandler } from "./handlers/installation.handler";
       Comment,
       ReviewComment,
       LabelEvent,
-      WebhookDelivery,
     ]),
     BullModule.registerQueue({ name: FETCH_QUEUE }),
   ],
   controllers: [WebhookController],
   providers: [
     WebhookService,
+    WebhookPruneService,
     PullRequestHandler,
     IssueHandler,
     ReviewHandler,

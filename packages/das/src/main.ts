@@ -1,5 +1,5 @@
 import { NestFactory } from "@nestjs/core";
-import { INestApplication } from "@nestjs/common";
+import { INestApplication, Logger } from "@nestjs/common";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import { AppModule } from "./app.module";
 import { json } from "express";
@@ -9,8 +9,7 @@ const setupSwagger = (app: INestApplication): void => {
     .setTitle("GitHub Mirror DAS")
     .setDescription(
       "GitHub Mirror Data Access Service for Gittensor. " +
-        "API is publicly accessible but rate-limited per IP. " +
-        "Provide a valid x-api-key header to bypass rate limits.",
+        "Admin endpoints require a valid x-api-key header.",
     )
     .setVersion("1.0")
     .addApiKey({ type: "apiKey", name: "x-api-key", in: "header" }, "api-key")
@@ -27,11 +26,15 @@ const setupSwagger = (app: INestApplication): void => {
 };
 
 async function bootstrap(): Promise<void> {
+  const logger = new Logger("Bootstrap");
   const app = await NestFactory.create(AppModule, { bodyParser: false });
 
-  // Preserve raw body for webhook signature verification
+  // Preserve raw body for webhook signature verification.
+  // 25 MB matches GitHub's webhook payload ceiling; the default 100 KB
+  // silently rejects large PR events with many files/labels/reviews.
   app.use(
     json({
+      limit: "25mb",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       verify: (req: any, _res: any, buf: Buffer) => {
         (req as { rawBody?: Buffer }).rawBody = buf;
@@ -39,33 +42,20 @@ async function bootstrap(): Promise<void> {
     }),
   );
 
-  const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
+  // Public read-only API with no cookie/session auth — CORS doesn't protect
+  // anything here; allow any origin rather than fail-open-when-unset.
   app.enableCors({
-    origin: (origin, callback) => {
-      if (
-        !origin ||
-        allowedOrigins.length === 0 ||
-        allowedOrigins.includes(origin)
-      ) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
+    origin: "*",
     methods: "GET",
     allowedHeaders: "Content-Type, x-api-key",
   });
 
   setupSwagger(app);
 
-  const port = process.env.API_PORT || 3000;
+  const port = process.env.API_PORT || 6969;
 
   await app.listen(port, () => {
-    console.log("listening on port", port);
+    logger.log(`listening on port ${port}`);
   });
 }
 void bootstrap();

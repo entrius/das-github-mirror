@@ -1,8 +1,9 @@
 -- Current labels on each PR with actor attribution.
 -- Collapses label_events to the latest action per (repo, pr, label); only rows
 -- where the latest action was "labeled" are included (i.e. label still applied).
--- actor_association falls back to the actor's latest known role in the repo
--- when the label_event itself has null association (backfilled events).
+-- actor_association is resolved from contributor_repo_roles (the actor's most
+-- recently observed role from PRs/issues they've authored in this repo).
+-- Actors who've never authored anything return NULL for actor_association.
 
 CREATE OR REPLACE VIEW pr_labels_by_actor AS
 WITH latest_events AS (
@@ -12,7 +13,7 @@ WITH latest_events AS (
         le.label_name,
         le.action,
         le.actor_github_id,
-        COALESCE(le.actor_association, crr.author_association) AS actor_association
+        crr.author_association AS actor_association
     FROM label_events le
     LEFT JOIN contributor_repo_roles crr
         ON crr.author_github_id = le.actor_github_id

@@ -17,15 +17,15 @@ export class InstallationHandler {
     const installationId = payload.installation?.id;
 
     if (event === "installation" && payload.action === "deleted") {
-      // App uninstalled — mark all repos for this installation inactive
+      // App uninstalled — soft-clear all repos for this installation.
+      // Data stays (historical scoring evidence); ingestion stops via registered=false.
       this.logger.warn(
-        `Installation ${installationId} deleted, marking repos inactive`,
+        `Installation ${installationId} deleted, clearing repos`,
       );
-      // We don't delete data, just clear the installation_id so we know it's dead
       await this.repoRepo
         .createQueryBuilder()
         .update()
-        .set({ installationId: null })
+        .set({ installationId: null, registered: false })
         .where("installationId = :id", { id: String(installationId) })
         .execute();
       return;
@@ -38,22 +38,31 @@ export class InstallationHandler {
       payload.repositories ?? payload.repositories_added ?? [];
 
     for (const repo of repos) {
-      await this.repoRepo.upsert(
-        {
+      // Check existence first so we only set added_at on insert, not on every
+      // re-fire of installation.created / installation_repositories.added.
+      const existing = await this.repoRepo.findOneBy({
+        repoFullName: repo.full_name,
+      });
+      if (existing) {
+        await this.repoRepo.update(repo.full_name, {
+          installationId: String(installationId),
+        });
+      } else {
+        await this.repoRepo.insert({
           repoFullName: repo.full_name,
           installationId: String(installationId),
           addedAt: new Date().toISOString(),
-        },
-        ["repoFullName"],
-      );
+        });
+      }
       this.logger.log(`Tracking repo: ${repo.full_name}`);
     }
 
-    // installation_repositories.removed
+    // installation_repositories.removed — soft clear, preserve historical data.
     const removed: any[] = payload.repositories_removed ?? [];
     for (const repo of removed) {
       await this.repoRepo.update(repo.full_name, {
-        installationId: undefined as any,
+        installationId: null,
+        registered: false,
       });
       this.logger.log(`Stopped tracking repo: ${repo.full_name}`);
     }

@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-explicit-any */
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
-import { Repo, WebhookDelivery } from "../entities";
+import { DataSource, Repository } from "typeorm";
+import { Repo } from "../entities";
 import { PullRequestHandler } from "./handlers/pull-request.handler";
 import { IssueHandler } from "./handlers/issue.handler";
 import { ReviewHandler } from "./handlers/review.handler";
@@ -16,10 +16,9 @@ export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
 
   constructor(
-    @InjectRepository(WebhookDelivery)
-    private readonly deliveryRepo: Repository<WebhookDelivery>,
     @InjectRepository(Repo)
     private readonly repoRepo: Repository<Repo>,
+    private readonly dataSource: DataSource,
     private readonly pullRequestHandler: PullRequestHandler,
     private readonly issueHandler: IssueHandler,
     private readonly reviewHandler: ReviewHandler,
@@ -29,9 +28,38 @@ export class WebhookService {
     private readonly installationHandler: InstallationHandler,
   ) {}
 
-  async isDuplicate(deliveryId: string): Promise<boolean> {
-    const existing = await this.deliveryRepo.findOneBy({ deliveryId });
-    return existing !== null;
+  /**
+   * Claim a delivery for processing.
+   * Returns true if this caller should process the event, false to skip.
+   *
+   * Uses INSERT ... ON CONFLICT DO NOTHING as an atomic claim. If the row
+   * already exists with processed_at set, it's a confirmed duplicate and we
+   * skip. If it exists with processed_at NULL, the prior attempt crashed
+   * mid-handler — we reprocess (all handlers are upserts, so that's safe).
+   */
+  async claimDelivery(deliveryId: string): Promise<boolean> {
+    const inserted: unknown[] = await this.dataSource.query(
+      `INSERT INTO webhook_deliveries (delivery_id)
+       VALUES ($1)
+       ON CONFLICT (delivery_id) DO NOTHING
+       RETURNING delivery_id`,
+      [deliveryId],
+    );
+    if (inserted.length > 0) return true;
+
+    const existing: { processed_at: string | null }[] =
+      await this.dataSource.query(
+        `SELECT processed_at FROM webhook_deliveries WHERE delivery_id = $1`,
+        [deliveryId],
+      );
+    return existing[0]?.processed_at == null;
+  }
+
+  async markProcessed(deliveryId: string): Promise<void> {
+    await this.dataSource.query(
+      `UPDATE webhook_deliveries SET processed_at = NOW() WHERE delivery_id = $1`,
+      [deliveryId],
+    );
   }
 
   async handleEvent(
@@ -39,12 +67,6 @@ export class WebhookService {
     payload: Record<string, any>,
     deliveryId: string,
   ): Promise<void> {
-    // Record delivery for dedup
-    await this.deliveryRepo.save({
-      deliveryId,
-      receivedAt: new Date().toISOString(),
-    });
-
     const repoFullName: string | undefined = payload.repository?.full_name;
 
     this.logger.log(
