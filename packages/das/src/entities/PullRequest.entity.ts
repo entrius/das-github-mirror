@@ -44,6 +44,12 @@ export class PullRequest {
   @Column({ name: "base_ref", nullable: true })
   baseRef: string;
 
+  @Column({ name: "head_ref", nullable: true })
+  headRef: string;
+
+  @Column({ name: "head_repo_full_name", nullable: true })
+  headRepoFullName: string;
+
   @Column({ name: "head_sha", nullable: true })
   headSha: string;
 

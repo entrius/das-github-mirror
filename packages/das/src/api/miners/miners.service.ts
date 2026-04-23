@@ -34,6 +34,9 @@ export class MinersService {
         p.last_edited_at,
         p.merged_by_login,
         p.base_ref,
+        p.head_ref,
+        p.head_repo_full_name,
+        r.default_branch,
         p.head_sha,
         p.base_sha,
         p.merge_base_sha,
@@ -98,6 +101,8 @@ export class MinersService {
       LEFT JOIN pr_review_summary rs
         ON rs.repo_full_name = p.repo_full_name
        AND rs.pr_number      = p.pr_number
+      LEFT JOIN repos r
+        ON r.repo_full_name = p.repo_full_name
       WHERE p.author_github_id = $1
         AND p.created_at       >= $2
       ORDER BY p.created_at DESC

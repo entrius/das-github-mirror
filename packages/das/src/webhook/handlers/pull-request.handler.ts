@@ -41,6 +41,8 @@ export class PullRequestHandler {
       // REST's updated_at changes on any interaction, not just body edits.
       mergedByLogin: pr.merged_by?.login ?? null,
       baseRef: pr.base?.ref ?? null,
+      headRef: pr.head?.ref ?? null,
+      headRepoFullName: pr.head?.repo?.full_name ?? null,
       headSha: pr.head?.sha ?? null,
       baseSha: pr.base?.sha ?? null,
       additions: pr.additions ?? null,

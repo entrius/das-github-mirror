@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     last_edited_at          TIMESTAMPTZ,
     merged_by_login         VARCHAR(255),
     base_ref                VARCHAR(255),
+    head_ref                VARCHAR(255),
+    head_repo_full_name     VARCHAR(255),
     head_sha                VARCHAR(40),
     base_sha                VARCHAR(40),
     merge_base_sha          VARCHAR(40),

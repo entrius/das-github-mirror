@@ -5,5 +5,6 @@ CREATE TABLE IF NOT EXISTS repos (
     installation_id     BIGINT,
     webhook_secret      VARCHAR(255),
     added_at            TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
-    last_event_at       TIMESTAMPTZ
+    last_event_at       TIMESTAMPTZ,
+    default_branch      VARCHAR(255)
 );

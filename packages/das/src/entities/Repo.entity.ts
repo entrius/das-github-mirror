@@ -16,4 +16,7 @@ export class Repo {
 
   @Column({ name: "last_event_at", type: "timestamptz", nullable: true })
   lastEventAt: string | null;
+
+  @Column({ name: "default_branch", type: "varchar", nullable: true })
+  defaultBranch: string | null;
 }

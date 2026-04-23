@@ -637,6 +637,7 @@ export class GitHubFetcherService implements OnModuleInit {
     const query = `
       query($owner: String!, $repo: String!, $cursor: String) {
         repository(owner: $owner, name: $repo) {
+          defaultBranchRef { name }
           pullRequests(
             first: 50,
             after: $cursor,
@@ -661,6 +662,8 @@ export class GitHubFetcherService implements OnModuleInit {
               authorAssociation
               mergedBy { login }
               baseRef { name }
+              headRef { name }
+              headRepository { nameWithOwner }
               baseRefOid
               headRefOid
               additions
@@ -735,8 +738,15 @@ export class GitHubFetcherService implements OnModuleInit {
       }
 
       const body: any = await res.json();
-      const page: any = body.data?.repository?.pullRequests;
+      const repoData: any = body.data?.repository;
+      const page: any = repoData?.pullRequests;
       if (!page) break;
+
+      const defaultBranch: string | null =
+        repoData?.defaultBranchRef?.name ?? null;
+      if (defaultBranch) {
+        await this.repoRepo.update(repoFullName, { defaultBranch });
+      }
 
       let shouldStop = false;
       for (const pr of page.nodes) {
@@ -762,6 +772,8 @@ export class GitHubFetcherService implements OnModuleInit {
             lastEditedAt: pr.lastEditedAt ?? null,
             mergedByLogin: pr.mergedBy?.login ?? null,
             baseRef: pr.baseRef?.name ?? null,
+            headRef: pr.headRef?.name ?? null,
+            headRepoFullName: pr.headRepository?.nameWithOwner ?? null,
             headSha: pr.headRefOid ?? null,
             baseSha: pr.baseRefOid ?? null,
             additions: pr.additions ?? null,
