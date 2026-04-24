@@ -9,7 +9,7 @@ WITH latest_events AS (
         le.label_name,
         le.action,
         le.actor_github_id,
-        COALESCE(le.actor_association, crr.author_association) AS actor_association
+        crr.author_association AS actor_association
     FROM label_events le
     LEFT JOIN contributor_repo_roles crr
         ON crr.author_github_id = le.actor_github_id

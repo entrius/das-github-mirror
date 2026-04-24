@@ -42,8 +42,8 @@ export class WebhookController {
 
     this.verifySignature(req.rawBody, signature);
 
-    const isDuplicate = await this.webhookService.isDuplicate(deliveryId);
-    if (isDuplicate) {
+    const shouldProcess = await this.webhookService.claimDelivery(deliveryId);
+    if (!shouldProcess) {
       this.logger.debug(`Duplicate delivery ${deliveryId}, skipping`);
       return { accepted: false };
     }
@@ -54,6 +54,10 @@ export class WebhookController {
       req.body as Record<string, any>,
       deliveryId,
     );
+
+    // Only mark processed on handler success — a thrown error leaves
+    // processed_at NULL so GitHub's retry will re-claim the row.
+    await this.webhookService.markProcessed(deliveryId);
 
     return { accepted: true };
   }

@@ -1,4 +1,7 @@
--- Label events (append-only log for anti-gaming timeline replay)
+-- Label events (append-only log for anti-gaming timeline replay).
+-- Actor's repo role (author_association) is NOT stored here — neither the
+-- webhook sender nor GraphQL LabeledEvent.actor expose it. The labels views
+-- resolve the role at read time via contributor_repo_roles.
 
 CREATE TABLE IF NOT EXISTS label_events (
     id                  SERIAL          PRIMARY KEY,
@@ -9,7 +12,6 @@ CREATE TABLE IF NOT EXISTS label_events (
     action              VARCHAR(20)     NOT NULL,
     actor_github_id     VARCHAR(255),
     actor_login         VARCHAR(255),
-    actor_association   VARCHAR(20),
     timestamp           TIMESTAMPTZ     NOT NULL
 );
 

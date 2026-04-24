@@ -33,7 +33,9 @@ export class LabelHandler {
     const targetNumber: number =
       source === "pr" ? payload.pull_request.number : payload.issue.number;
 
-    // Append to label_events log
+    // Append to label_events log. Actor's repo role is resolved at read time
+    // via contributor_repo_roles (see pr_labels_by_actor view) — neither the
+    // webhook sender nor GraphQL LabeledEvent.actor expose author_association.
     await this.labelEventRepo.save({
       repoFullName,
       targetNumber,
@@ -42,7 +44,6 @@ export class LabelHandler {
       action,
       actorGithubId: sender ? String(sender.id) : null,
       actorLogin: sender?.login ?? null,
-      actorAssociation: sender?.author_association ?? null,
       timestamp: new Date().toISOString(),
     });
 

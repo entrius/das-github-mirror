@@ -616,8 +616,11 @@ export class GitHubFetcherService implements OnModuleInit {
   }
 
   private escapeGraphql(s: string): string {
-    // Escape backslashes and double-quotes for safe inline strings in GraphQL.
-    return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    // GraphQL string literals follow the same escape rules as JSON strings —
+    // reuse the JSON encoder, stripping the surrounding quotes. Covers
+    // backslash, double-quote, newlines, tabs, and control characters.
+    const json = JSON.stringify(s);
+    return json.slice(1, -1);
   }
 
   // --- Backfill ---
@@ -714,6 +717,7 @@ export class GitHubFetcherService implements OnModuleInit {
 
     const prs: { prNumber: number; isMerged: boolean }[] = [];
     let cursor: string | null = null;
+    let defaultBranchWritten = false;
 
     while (true) {
       const res: Response = await this.githubFetch(
@@ -742,10 +746,14 @@ export class GitHubFetcherService implements OnModuleInit {
       const page: any = repoData?.pullRequests;
       if (!page) break;
 
-      const defaultBranch: string | null =
-        repoData?.defaultBranchRef?.name ?? null;
-      if (defaultBranch) {
-        await this.repoRepo.update(repoFullName, { defaultBranch });
+      // defaultBranchRef is the same across every page — write once.
+      if (!defaultBranchWritten) {
+        const defaultBranch: string | null =
+          repoData?.defaultBranchRef?.name ?? null;
+        if (defaultBranch) {
+          await this.repoRepo.update(repoFullName, { defaultBranch });
+        }
+        defaultBranchWritten = true;
       }
 
       let shouldStop = false;
@@ -957,10 +965,9 @@ export class GitHubFetcherService implements OnModuleInit {
 
   /**
    * Upsert a list of LABELED_EVENT / UNLABELED_EVENT timeline nodes into
-   * the label_events table. The GraphQL actor type doesn't expose
-   * authorAssociation, so actor_association is left null on backfill —
-   * labels on GitHub require triage+ access anyway, so the last label
-   * is treated as authoritative by scoring.
+   * the label_events table. Actor role is resolved at read time via
+   * contributor_repo_roles — GraphQL's actor type doesn't expose
+   * authorAssociation.
    */
   private async saveLabelTimelineEvents(
     repoFullName: string,
@@ -983,7 +990,6 @@ export class GitHubFetcherService implements OnModuleInit {
           ? String(node.actor.databaseId)
           : null,
         actorLogin: node.actor?.login ?? null,
-        actorAssociation: null,
         timestamp: node.createdAt,
       });
     }
