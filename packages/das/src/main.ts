@@ -52,6 +52,10 @@ async function bootstrap(): Promise<void> {
 
   setupSwagger(app);
 
+  // Route SIGTERM/SIGINT through Nest lifecycle hooks so @nestjs/bullmq's
+  // explorer.onApplicationShutdown drains in-flight workers cleanly.
+  app.enableShutdownHooks();
+
   const port = process.env.API_PORT || 6969;
 
   await app.listen(port, () => {

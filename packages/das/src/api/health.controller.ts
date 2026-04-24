@@ -1,4 +1,9 @@
-import { Controller, Get } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  HttpException,
+  HttpStatus,
+} from "@nestjs/common";
 import { ApiOperation, ApiTags } from "@nestjs/swagger";
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -54,13 +59,21 @@ export class HealthController {
       this.listRepoHealth(),
     ]);
 
-    return {
-      status: db.ok && redis.ok ? "ok" : "error",
+    const healthy = db.ok && redis.ok;
+    const response: HealthResponse = {
+      status: healthy ? "ok" : "error",
       uptime_seconds: Math.floor(process.uptime()),
       db,
       redis,
       repos,
     };
+
+    // Return 503 (with the full body preserved) when core deps are down,
+    // so LB/k8s/Cloudflare origin probes actually react.
+    if (!healthy) {
+      throw new HttpException(response, HttpStatus.SERVICE_UNAVAILABLE);
+    }
+    return response;
   }
 
   private async checkDb(): Promise<{ ok: boolean; latency_ms: number | null }> {
