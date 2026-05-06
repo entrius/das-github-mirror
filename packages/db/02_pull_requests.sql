@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     closing_issue_numbers   INTEGER[],
     scoring_data_stored     BOOLEAN         NOT NULL DEFAULT FALSE,
 
-    PRIMARY KEY (repo_full_name, pr_number)
+    PRIMARY KEY (repo_full_name, pr_number),
+    CONSTRAINT pull_requests_merged_has_merged_at
+        CHECK (state != 'MERGED' OR merged_at IS NOT NULL)
 );
 
 CREATE INDEX IF NOT EXISTS idx_pull_requests_author      ON pull_requests(author_github_id);
