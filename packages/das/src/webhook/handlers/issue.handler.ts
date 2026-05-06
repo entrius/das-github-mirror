@@ -43,6 +43,10 @@ export class IssueHandler {
       data.lastEditedAt = issue.updated_at ?? null;
     }
 
+    if (payload.action === "transferred") {
+      data.isTransferred = true;
+    }
+
     await this.issueRepo.upsert(data, ["repoFullName", "issueNumber"]);
 
     await this.repoRepo.update(repoFullName, {
