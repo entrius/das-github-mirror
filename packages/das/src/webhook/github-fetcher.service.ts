@@ -26,6 +26,18 @@ const MAX_FILE_SIZE_BYTES = 1_000_000;
 // Starting batch size for batched GraphQL file-content requests. Halves on failure.
 const GRAPHQL_FILES_BATCH_SIZE = 50;
 
+const GRAPHQL_NESTED_PAGE_SIZE = 100;
+
+interface GraphqlPageInfo {
+  hasNextPage?: boolean | null;
+  endCursor?: string | null;
+}
+
+interface GraphqlConnection<T = any> {
+  nodes?: T[] | null;
+  pageInfo?: GraphqlPageInfo | null;
+}
+
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -675,8 +687,12 @@ export class GitHubFetcherService implements OnModuleInit {
               additions
               deletions
               commits { totalCount }
-              labels(first: 10) { nodes { name } }
+              labels(first: 10) {
+                pageInfo { hasNextPage endCursor }
+                nodes { name }
+              }
               reviews(first: 10) {
+                pageInfo { hasNextPage endCursor }
                 nodes {
                   submittedAt
                   state
@@ -692,6 +708,7 @@ export class GitHubFetcherService implements OnModuleInit {
                 itemTypes: [LABELED_EVENT, UNLABELED_EVENT]
                 first: 30
               ) {
+                pageInfo { hasNextPage endCursor }
                 nodes {
                   __typename
                   ... on LabeledEvent {
@@ -767,6 +784,15 @@ export class GitHubFetcherService implements OnModuleInit {
           break;
         }
 
+        const labelNodes = await this.fetchCompleteLabels(
+          owner,
+          repo,
+          token,
+          "pr",
+          pr.number,
+          pr.labels,
+        );
+
         await this.prRepo.upsert(
           {
             repoFullName,
@@ -790,15 +816,19 @@ export class GitHubFetcherService implements OnModuleInit {
             additions: pr.additions ?? null,
             deletions: pr.deletions ?? null,
             commitsCount: pr.commits?.totalCount ?? null,
-            labels: (pr.labels?.nodes ?? []).map(
-              (l: { name: string }) => l.name,
-            ),
+            labels: labelNodes.map((l: { name: string }) => l.name),
           },
           ["repoFullName", "prNumber"],
         );
 
         // Upsert reviews captured in the same query
-        const reviewNodes = pr.reviews?.nodes ?? [];
+        const reviewNodes = await this.fetchCompletePullRequestReviews(
+          owner,
+          repo,
+          token,
+          pr.number,
+          pr.reviews,
+        );
         for (const review of reviewNodes) {
           if (!review?.submittedAt || !review?.author?.databaseId) continue;
           await this.reviewRepo.upsert(
@@ -816,11 +846,19 @@ export class GitHubFetcherService implements OnModuleInit {
         }
 
         // Upsert label events (LABELED_EVENT / UNLABELED_EVENT)
+        const labelTimelineNodes = await this.fetchCompleteLabelTimelineEvents(
+          owner,
+          repo,
+          token,
+          "pr",
+          pr.number,
+          pr.timelineItems,
+        );
         await this.saveLabelTimelineEvents(
           repoFullName,
           pr.number,
           "pr",
-          pr.timelineItems?.nodes ?? [],
+          labelTimelineNodes,
         );
 
         prs.push({ prNumber: pr.number });
@@ -865,11 +903,15 @@ export class GitHubFetcherService implements OnModuleInit {
                 ... on Bot { databaseId }
               }
               authorAssociation
-              labels(first: 10) { nodes { name } }
+              labels(first: 10) {
+                pageInfo { hasNextPage endCursor }
+                nodes { name }
+              }
               timelineItems(
                 itemTypes: [LABELED_EVENT, UNLABELED_EVENT]
                 first: 30
               ) {
+                pageInfo { hasNextPage endCursor }
                 nodes {
                   __typename
                   ... on LabeledEvent {
@@ -931,6 +973,15 @@ export class GitHubFetcherService implements OnModuleInit {
           break;
         }
 
+        const labelNodes = await this.fetchCompleteLabels(
+          owner,
+          repo,
+          token,
+          "issue",
+          issue.number,
+          issue.labels,
+        );
+
         await this.issueRepo.upsert(
           {
             repoFullName,
@@ -945,25 +996,226 @@ export class GitHubFetcherService implements OnModuleInit {
             closedAt: issue.closedAt ?? null,
             updatedAt: issue.updatedAt ?? null,
             lastEditedAt: issue.lastEditedAt ?? null,
-            labels: (issue.labels?.nodes ?? []).map(
-              (l: { name: string }) => l.name,
-            ),
+            labels: labelNodes.map((l: { name: string }) => l.name),
           },
           ["repoFullName", "issueNumber"],
         );
 
         // Upsert label events for this issue
+        const labelTimelineNodes = await this.fetchCompleteLabelTimelineEvents(
+          owner,
+          repo,
+          token,
+          "issue",
+          issue.number,
+          issue.timelineItems,
+        );
         await this.saveLabelTimelineEvents(
           repoFullName,
           issue.number,
           "issue",
-          issue.timelineItems?.nodes ?? [],
+          labelTimelineNodes,
         );
       }
 
       if (shouldStop || !page.pageInfo.hasNextPage) break;
       cursor = page.pageInfo.endCursor;
     }
+  }
+
+  private async fetchCompletePullRequestReviews(
+    owner: string,
+    repo: string,
+    token: string,
+    prNumber: number,
+    initialConnection: GraphqlConnection,
+  ): Promise<any[]> {
+    const query = `
+      query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $number) {
+            reviews(first: ${GRAPHQL_NESTED_PAGE_SIZE}, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                submittedAt
+                state
+                authorAssociation
+                author {
+                  login
+                  ... on User { databaseId }
+                  ... on Bot { databaseId }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    return [
+      ...(initialConnection?.nodes ?? []),
+      ...(await this.fetchRemainingGraphqlConnection(
+        token,
+        query,
+        { owner, repo, number: prNumber },
+        initialConnection?.pageInfo ?? null,
+        (body) => body.data?.repository?.pullRequest?.reviews,
+        `reviews for ${owner}/${repo}#${prNumber}`,
+        "Backfill PR review GraphQL failed",
+      )),
+    ];
+  }
+
+  private async fetchCompleteLabels(
+    owner: string,
+    repo: string,
+    token: string,
+    targetType: "pr" | "issue",
+    targetNumber: number,
+    initialConnection: GraphqlConnection,
+  ): Promise<any[]> {
+    const targetField = targetType === "pr" ? "pullRequest" : "issue";
+    const query = `
+      query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          ${targetField}(number: $number) {
+            labels(first: ${GRAPHQL_NESTED_PAGE_SIZE}, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes { name }
+            }
+          }
+        }
+      }
+    `;
+
+    return [
+      ...(initialConnection?.nodes ?? []),
+      ...(await this.fetchRemainingGraphqlConnection(
+        token,
+        query,
+        { owner, repo, number: targetNumber },
+        initialConnection?.pageInfo ?? null,
+        (body) => body.data?.repository?.[targetField]?.labels,
+        `${targetType} labels for ${owner}/${repo}#${targetNumber}`,
+        `Backfill ${targetType} label GraphQL failed`,
+      )),
+    ];
+  }
+
+  private async fetchCompleteLabelTimelineEvents(
+    owner: string,
+    repo: string,
+    token: string,
+    targetType: "pr" | "issue",
+    targetNumber: number,
+    initialConnection: GraphqlConnection,
+  ): Promise<any[]> {
+    const targetField = targetType === "pr" ? "pullRequest" : "issue";
+    const query = `
+      query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          ${targetField}(number: $number) {
+            timelineItems(
+              itemTypes: [LABELED_EVENT, UNLABELED_EVENT]
+              first: ${GRAPHQL_NESTED_PAGE_SIZE}
+              after: $cursor
+            ) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                __typename
+                ... on LabeledEvent {
+                  createdAt
+                  label { name }
+                  actor {
+                    login
+                    ... on User { databaseId }
+                  }
+                }
+                ... on UnlabeledEvent {
+                  createdAt
+                  label { name }
+                  actor {
+                    login
+                    ... on User { databaseId }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    return [
+      ...(initialConnection?.nodes ?? []),
+      ...(await this.fetchRemainingGraphqlConnection(
+        token,
+        query,
+        { owner, repo, number: targetNumber },
+        initialConnection?.pageInfo ?? null,
+        (body) => body.data?.repository?.[targetField]?.timelineItems,
+        `${targetType} label timeline for ${owner}/${repo}#${targetNumber}`,
+        `Backfill ${targetType} label timeline GraphQL failed`,
+      )),
+    ];
+  }
+
+  private async fetchRemainingGraphqlConnection(
+    token: string,
+    query: string,
+    variables: Record<string, unknown>,
+    pageInfo: GraphqlPageInfo | null,
+    readConnection: (body: any) => GraphqlConnection | null | undefined,
+    context: string,
+    errorPrefix: string,
+  ): Promise<any[]> {
+    const nodes: any[] = [];
+    let cursor = this.nextConnectionCursor(pageInfo, context);
+
+    while (cursor) {
+      const res: Response = await this.githubFetch(
+        "https://api.github.com/graphql",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            query,
+            variables: { ...variables, cursor },
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        throw new Error(`${errorPrefix}: ${res.status} ${await res.text()}`);
+      }
+
+      const body: any = await res.json();
+      const connection = readConnection(body);
+      if (!connection) {
+        throw new Error(
+          `Missing GraphQL connection while paginating ${context}`,
+        );
+      }
+
+      nodes.push(...(connection.nodes ?? []));
+      cursor = this.nextConnectionCursor(connection.pageInfo ?? null, context);
+    }
+
+    return nodes;
+  }
+
+  private nextConnectionCursor(
+    pageInfo: GraphqlPageInfo | null,
+    context: string,
+  ): string | null {
+    if (!pageInfo?.hasNextPage) return null;
+    if (!pageInfo.endCursor) {
+      throw new Error(`Missing GraphQL cursor while paginating ${context}`);
+    }
+    return pageInfo.endCursor;
   }
 
   /**
