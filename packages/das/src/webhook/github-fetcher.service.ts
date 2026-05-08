@@ -477,15 +477,19 @@ export class GitHubFetcherService implements OnModuleInit {
     headSha: string,
     baseSha: string | null,
   ): Promise<void> {
-    // Only fetch contents for files that have a meaningful version to fetch
-    const scored = files.filter((f) => f.status !== "removed");
-    if (scored.length === 0) return;
+    // Added files have only a head blob; removed files have only a base blob.
+    // Keep removed files when a base SHA is available so deletion scoring has
+    // the content that existed before the PR.
+    const contentFiles = files.filter(
+      (f) => f.status !== "removed" || !!baseSha,
+    );
+    if (contentFiles.length === 0) return;
 
     let batchSize = GRAPHQL_FILES_BATCH_SIZE;
     const minBatchSize = 5;
 
-    for (let i = 0; i < scored.length; ) {
-      const batch = scored.slice(i, i + batchSize);
+    for (let i = 0; i < contentFiles.length; ) {
+      const batch = contentFiles.slice(i, i + batchSize);
       try {
         await this.fetchContentBatch(
           repoFullName,
@@ -537,11 +541,14 @@ export class GitHubFetcherService implements OnModuleInit {
           `base${i}: object(expression: "${baseExpr}") { ... on Blob { text byteSize isBinary } }`,
         );
       }
-      // Head version (already filtered out removed files at caller)
-      const headExpr = this.escapeGraphql(`${headSha}:${file.filename}`);
-      fields.push(
-        `head${i}: object(expression: "${headExpr}") { ... on Blob { text byteSize isBinary } }`,
-      );
+      // Removed files do not exist at head; store a null headContent while
+      // still fetching the base blob above.
+      if (file.status !== "removed") {
+        const headExpr = this.escapeGraphql(`${headSha}:${file.filename}`);
+        fields.push(
+          `head${i}: object(expression: "${headExpr}") { ... on Blob { text byteSize isBinary } }`,
+        );
+      }
     }
 
     const query = `
