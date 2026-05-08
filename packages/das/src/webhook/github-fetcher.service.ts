@@ -2,7 +2,7 @@
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import { IsNull, Repository } from "typeorm";
+import { EntityManager, IsNull, Repository } from "typeorm";
 import { readFileSync } from "fs";
 import { sign } from "jsonwebtoken";
 import {
@@ -391,25 +391,41 @@ export class GitHubFetcherService implements OnModuleInit {
       return { status: "stale" };
     }
 
-    // Clear any stale data for this PR (e.g. after a synchronize event)
-    await this.prFileRepo.delete({ repoFullName, prNumber });
-    await this.prFileContentRepo.delete({ repoFullName, prNumber });
+    // Clear stale data and replace file metadata only while the PR row still
+    // matches this job's generation. Without the row lock, an older active job
+    // can delete rows written by a newer completed generation.
+    const filesStored = await this.writeIfCurrentPrFilesGeneration(
+      repoFullName,
+      prNumber,
+      generation,
+      async (manager) => {
+        const prFileRepo = manager.getRepository(PrFile);
+        const prFileContentRepo = manager.getRepository(PrFileContent);
 
-    // 2. Upsert file metadata
-    for (const file of files) {
-      await this.prFileRepo.upsert(
-        {
-          repoFullName,
-          prNumber,
-          filename: file.filename,
-          previousFilename: file.previous_filename ?? null,
-          status: file.status,
-          additions: file.additions ?? 0,
-          deletions: file.deletions ?? 0,
-          changes: file.changes ?? 0,
-        },
-        ["repoFullName", "prNumber", "filename"],
-      );
+        await prFileRepo.delete({ repoFullName, prNumber });
+        await prFileContentRepo.delete({ repoFullName, prNumber });
+
+        // 2. Upsert file metadata
+        for (const file of files) {
+          await prFileRepo.upsert(
+            {
+              repoFullName,
+              prNumber,
+              filename: file.filename,
+              previousFilename: file.previous_filename ?? null,
+              status: file.status,
+              additions: file.additions ?? 0,
+              deletions: file.deletions ?? 0,
+              changes: file.changes ?? 0,
+            },
+            ["repoFullName", "prNumber", "filename"],
+          );
+        }
+      },
+    );
+
+    if (!filesStored) {
+      return { status: "stale" };
     }
 
     // 3. Fetch file contents in batches (base + head in one GraphQL call each)
@@ -547,7 +563,7 @@ export class GitHubFetcherService implements OnModuleInit {
         return { status: "stale" };
       }
       try {
-        await this.fetchContentBatch(
+        const result = await this.fetchContentBatch(
           repoFullName,
           prNumber,
           batch,
@@ -556,7 +572,9 @@ export class GitHubFetcherService implements OnModuleInit {
           token,
           headSha,
           baseSha,
+          generation,
         );
+        if (result.status === "stale") return result;
         i += batch.length;
       } catch (err) {
         if (batchSize > minBatchSize) {
@@ -587,7 +605,8 @@ export class GitHubFetcherService implements OnModuleInit {
     token: string,
     headSha: string,
     baseSha: string | null,
-  ): Promise<void> {
+    generation: PrFilesGeneration,
+  ): Promise<PrFilesFetchResult> {
     const fields: string[] = [];
     for (let i = 0; i < batch.length; i++) {
       const file = batch[i];
@@ -640,6 +659,15 @@ export class GitHubFetcherService implements OnModuleInit {
     }
 
     const repoData = body.data?.repository ?? {};
+    const contents: Array<{
+      repoFullName: string;
+      prNumber: number;
+      filename: string;
+      baseContent: string | null;
+      headContent: string | null;
+      isBinary: boolean;
+      byteSize: number | null;
+    }> = [];
 
     for (let i = 0; i < batch.length; i++) {
       const file = batch[i];
@@ -653,19 +681,55 @@ export class GitHubFetcherService implements OnModuleInit {
       const baseContent = this.extractBlobText(baseBlob);
       const byteSize = headBlob?.byteSize ?? baseBlob?.byteSize ?? null;
 
-      await this.prFileContentRepo.upsert(
-        {
-          repoFullName,
-          prNumber,
-          filename: file.filename,
-          baseContent,
-          headContent,
-          isBinary,
-          byteSize,
-        },
-        ["repoFullName", "prNumber", "filename"],
-      );
+      contents.push({
+        repoFullName,
+        prNumber,
+        filename: file.filename,
+        baseContent,
+        headContent,
+        isBinary,
+        byteSize,
+      });
     }
+
+    const contentsStored = await this.writeIfCurrentPrFilesGeneration(
+      repoFullName,
+      prNumber,
+      generation,
+      async (manager) => {
+        const prFileContentRepo = manager.getRepository(PrFileContent);
+        for (const content of contents) {
+          await prFileContentRepo.upsert(content, [
+            "repoFullName",
+            "prNumber",
+            "filename",
+          ]);
+        }
+      },
+    );
+
+    return contentsStored ? { status: "stored" } : { status: "stale" };
+  }
+
+  private async writeIfCurrentPrFilesGeneration(
+    repoFullName: string,
+    prNumber: number,
+    generation: PrFilesGeneration,
+    write: (manager: EntityManager) => Promise<void>,
+  ): Promise<boolean> {
+    return this.prRepo.manager.transaction(async (manager) => {
+      const pr = await manager.getRepository(PullRequest).findOne({
+        where: { repoFullName, prNumber },
+        lock: { mode: "pessimistic_write" },
+      });
+
+      if (!pr || !this.matchesPrFilesGeneration(pr, generation)) {
+        return false;
+      }
+
+      await write(manager);
+      return true;
+    });
   }
 
   private matchesPrFilesGeneration(

@@ -5,6 +5,7 @@ import { FETCH_JOBS } from "./constants";
 import { FetchProcessor } from "./fetch.processor";
 import { PullRequestHandler } from "../webhook/handlers/pull-request.handler";
 import { GitHubFetcherService } from "../webhook/github-fetcher.service";
+import { PrFile, PrFileContent, PullRequest } from "../entities";
 
 type MockRepo<T extends Record<string, any>> = {
   row: T | null;
@@ -13,12 +14,21 @@ type MockRepo<T extends Record<string, any>> = {
   updates: unknown[];
   repo: {
     findOneBy: (criteria: Record<string, unknown>) => Promise<T | null>;
+    findOne: (options: {
+      where?: Record<string, unknown>;
+    }) => Promise<T | null>;
     update: (
       criteria: Record<string, unknown> | string,
       patch: Record<string, unknown>,
     ) => Promise<{ affected: number }>;
-    upsert: (data: Record<string, unknown>) => Promise<void>;
+    upsert: (
+      data: Record<string, unknown>,
+      conflictPaths?: string[],
+    ) => Promise<void>;
     delete: (criteria: Record<string, unknown>) => Promise<void>;
+    manager?: {
+      transaction: <R>(work: (manager: any) => Promise<R>) => Promise<R>;
+    };
   };
 };
 
@@ -33,6 +43,12 @@ function createMockRepo<T extends Record<string, any>>(
     repo: {
       findOneBy: (criteria: Record<string, unknown>): Promise<T | null> =>
         Promise.resolve(matchesCriteria(mock.row, criteria) ? mock.row : null),
+      findOne: (options: {
+        where?: Record<string, unknown>;
+      }): Promise<T | null> =>
+        Promise.resolve(
+          matchesCriteria(mock.row, options.where ?? {}) ? mock.row : null,
+        ),
       update: (
         criteria: Record<string, unknown> | string,
         patch: Record<string, unknown>,
@@ -60,6 +76,44 @@ function createMockRepo<T extends Record<string, any>>(
   };
 
   return mock;
+}
+
+function createTransactionManager(
+  repos: Map<unknown, MockRepo<any>>,
+  beforeTransaction?: () => void,
+): {
+  transaction: <R>(work: (manager: any) => Promise<R>) => Promise<R>;
+} {
+  return {
+    transaction: async <R>(work: (manager: any) => Promise<R>): Promise<R> => {
+      beforeTransaction?.();
+      return work({
+        getRepository: (entity: unknown) => {
+          const repo = repos.get(entity);
+          if (!repo) {
+            throw new Error(`No mock repository for ${String(entity)}`);
+          }
+          return repo.repo;
+        },
+      });
+    },
+  };
+}
+
+function attachPrFilesTransactionManager(
+  prRepo: MockRepo<any>,
+  prFileRepo: MockRepo<any>,
+  prFileContentRepo: MockRepo<any>,
+  beforeTransaction?: () => void,
+): void {
+  prRepo.repo.manager = createTransactionManager(
+    new Map<unknown, MockRepo<any>>([
+      [PullRequest, prRepo],
+      [PrFile, prFileRepo],
+      [PrFileContent, prFileContentRepo],
+    ]),
+    beforeTransaction,
+  );
 }
 
 function matchesCriteria<T extends Record<string, any>>(
@@ -129,6 +183,28 @@ function synchronizePayload(): Record<string, any> {
       labels: [],
     },
   };
+}
+
+function createGitHubFetcher(
+  prFileRepo: MockRepo<any>,
+  prFileContentRepo: MockRepo<any>,
+  prRepo: MockRepo<any>,
+): GitHubFetcherService {
+  const otherRepo = createMockRepo();
+  const config = {
+    getOrThrow: (key: string): string =>
+      key === "GITHUB_APP_ID" ? "123" : "/tmp/private-key.pem",
+  };
+  return new GitHubFetcherService(
+    config as any,
+    prFileRepo.repo as any,
+    prFileContentRepo.repo as any,
+    prRepo.repo as any,
+    otherRepo.repo as any,
+    otherRepo.repo as any,
+    otherRepo.repo as any,
+    otherRepo.repo as any,
+  );
 }
 
 void test("synchronize enqueues a PR file job for the webhook head/base generation", async () => {
@@ -331,21 +407,7 @@ void test("fetcher skips destructive file writes when the job generation is alre
     baseSha: "B2",
     mergeBaseSha: null,
   });
-  const otherRepo = createMockRepo();
-  const config = {
-    getOrThrow: (key: string): string =>
-      key === "GITHUB_APP_ID" ? "123" : "/tmp/private-key.pem",
-  };
-  const fetcher = new GitHubFetcherService(
-    config as any,
-    prFileRepo.repo as any,
-    prFileContentRepo.repo as any,
-    prRepo.repo as any,
-    otherRepo.repo as any,
-    otherRepo.repo as any,
-    otherRepo.repo as any,
-    otherRepo.repo as any,
-  );
+  const fetcher = createGitHubFetcher(prFileRepo, prFileContentRepo, prRepo);
 
   (fetcher as any).getTokenForRepo = (): Promise<string> =>
     Promise.resolve("token");
@@ -363,5 +425,209 @@ void test("fetcher skips destructive file writes when the job generation is alre
   assert.equal(prFileRepo.deletes.length, 0);
   assert.equal(prFileContentRepo.deletes.length, 0);
   assert.equal(prFileRepo.upserts.length, 0);
+  assert.equal(prFileContentRepo.upserts.length, 0);
+});
+
+void test("fetcher replaces PR file rows when the generation is current under the row lock", async () => {
+  const prFileRepo = createMockRepo();
+  const prFileContentRepo = createMockRepo();
+  const prRepo = createMockRepo({
+    repoFullName: "owner/repo",
+    prNumber: 7,
+    headSha: null,
+    baseSha: null,
+    mergeBaseSha: null,
+  });
+  attachPrFilesTransactionManager(prRepo, prFileRepo, prFileContentRepo);
+  const fetcher = createGitHubFetcher(prFileRepo, prFileContentRepo, prRepo);
+
+  (fetcher as any).getTokenForRepo = (): Promise<string> =>
+    Promise.resolve("token");
+  (fetcher as any).fetchAllPrFiles = (): Promise<unknown[]> =>
+    Promise.resolve([
+      {
+        filename: "src/app.ts",
+        previous_filename: undefined,
+        status: "modified",
+        additions: 3,
+        deletions: 1,
+        changes: 4,
+      },
+    ]);
+
+  const result = await fetcher.fetchAndStorePrFiles("owner/repo", 7, {
+    headSha: null,
+    baseSha: null,
+  });
+
+  assert.deepEqual(result, { status: "stored" });
+  assert.deepEqual(prFileRepo.deletes, [
+    { repoFullName: "owner/repo", prNumber: 7 },
+  ]);
+  assert.deepEqual(prFileContentRepo.deletes, [
+    { repoFullName: "owner/repo", prNumber: 7 },
+  ]);
+  assert.deepEqual(prFileRepo.upserts, [
+    {
+      repoFullName: "owner/repo",
+      prNumber: 7,
+      filename: "src/app.ts",
+      previousFilename: null,
+      status: "modified",
+      additions: 3,
+      deletions: 1,
+      changes: 4,
+    },
+  ]);
+  assert.equal(prFileContentRepo.upserts.length, 0);
+});
+
+void test("fetcher rechecks generation under the row lock before deleting PR file rows", async () => {
+  const prFileRepo = createMockRepo();
+  const prFileContentRepo = createMockRepo();
+  const prRepo = createMockRepo({
+    repoFullName: "owner/repo",
+    prNumber: 7,
+    headSha: "H1",
+    baseSha: "B1",
+    mergeBaseSha: null,
+    scoringDataStored: false,
+  });
+  let raced = false;
+  const deletePrFiles = prFileRepo.repo.delete;
+  prFileRepo.repo.delete = async (
+    criteria: Record<string, unknown>,
+  ): Promise<void> => {
+    if (!raced) {
+      Object.assign(prRepo.row ?? {}, {
+        headSha: "H2",
+        baseSha: "B2",
+        scoringDataStored: true,
+      });
+      raced = true;
+    }
+    await deletePrFiles(criteria);
+  };
+  attachPrFilesTransactionManager(prRepo, prFileRepo, prFileContentRepo, () => {
+    if (!raced) {
+      Object.assign(prRepo.row ?? {}, {
+        headSha: "H2",
+        baseSha: "B2",
+        scoringDataStored: true,
+      });
+      raced = true;
+    }
+  });
+  const fetcher = createGitHubFetcher(prFileRepo, prFileContentRepo, prRepo);
+
+  (fetcher as any).getTokenForRepo = (): Promise<string> =>
+    Promise.resolve("token");
+  (fetcher as any).fetchMergeBaseSha = (): Promise<string | null> =>
+    Promise.resolve(null);
+  (fetcher as any).fetchAllPrFiles = (): Promise<unknown[]> =>
+    Promise.resolve([
+      {
+        filename: "src/app.ts",
+        status: "removed",
+        additions: 0,
+        deletions: 4,
+        changes: 4,
+      },
+    ]);
+
+  const result = await fetcher.fetchAndStorePrFiles("owner/repo", 7, {
+    headSha: "H1",
+    baseSha: "B1",
+  });
+
+  assert.deepEqual(result, { status: "stale" });
+  assert.equal(prRepo.row?.headSha, "H2");
+  assert.equal(prRepo.row?.baseSha, "B2");
+  assert.equal(prRepo.row?.scoringDataStored, true);
+  assert.equal(prFileRepo.deletes.length, 0);
+  assert.equal(prFileContentRepo.deletes.length, 0);
+  assert.equal(prFileRepo.upserts.length, 0);
+  assert.equal(prFileContentRepo.upserts.length, 0);
+});
+
+void test("fetcher rechecks generation under the row lock before storing PR file contents", async () => {
+  const prFileRepo = createMockRepo();
+  const prFileContentRepo = createMockRepo();
+  const prRepo = createMockRepo({
+    repoFullName: "owner/repo",
+    prNumber: 7,
+    headSha: "H1",
+    baseSha: "B1",
+    mergeBaseSha: null,
+    scoringDataStored: false,
+  });
+  let transactionCount = 0;
+  const upsertContent = prFileContentRepo.repo.upsert;
+  prFileContentRepo.repo.upsert = async (
+    data: Record<string, unknown>,
+    conflictPaths?: string[],
+  ): Promise<void> => {
+    Object.assign(prRepo.row ?? {}, {
+      headSha: "H2",
+      baseSha: "B2",
+      scoringDataStored: true,
+    });
+    await upsertContent(data, conflictPaths);
+  };
+  attachPrFilesTransactionManager(prRepo, prFileRepo, prFileContentRepo, () => {
+    transactionCount++;
+    if (transactionCount === 2) {
+      Object.assign(prRepo.row ?? {}, {
+        headSha: "H2",
+        baseSha: "B2",
+        scoringDataStored: true,
+      });
+    }
+  });
+  const fetcher = createGitHubFetcher(prFileRepo, prFileContentRepo, prRepo);
+
+  (fetcher as any).getTokenForRepo = (): Promise<string> =>
+    Promise.resolve("token");
+  (fetcher as any).fetchMergeBaseSha = (): Promise<string | null> =>
+    Promise.resolve(null);
+  (fetcher as any).fetchAllPrFiles = (): Promise<unknown[]> =>
+    Promise.resolve([
+      {
+        filename: "src/app.ts",
+        status: "modified",
+        additions: 3,
+        deletions: 1,
+        changes: 4,
+      },
+    ]);
+  (fetcher as any).githubFetch = (): Promise<{
+    ok: true;
+    json: () => Promise<Record<string, any>>;
+  }> =>
+    Promise.resolve({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          data: {
+            repository: {
+              base0: { text: "old", byteSize: 3, isBinary: false },
+              head0: { text: "new", byteSize: 3, isBinary: false },
+            },
+          },
+        }),
+    });
+
+  const result = await fetcher.fetchAndStorePrFiles("owner/repo", 7, {
+    headSha: "H1",
+    baseSha: "B1",
+  });
+
+  assert.deepEqual(result, { status: "stale" });
+  assert.equal(prRepo.row?.headSha, "H2");
+  assert.equal(prRepo.row?.baseSha, "B2");
+  assert.equal(prRepo.row?.scoringDataStored, true);
+  assert.equal(prFileRepo.deletes.length, 1);
+  assert.equal(prFileContentRepo.deletes.length, 1);
+  assert.equal(prFileRepo.upserts.length, 1);
   assert.equal(prFileContentRepo.upserts.length, 0);
 });
