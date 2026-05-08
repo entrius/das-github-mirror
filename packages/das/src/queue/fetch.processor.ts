@@ -1,11 +1,19 @@
 import { Processor, WorkerHost, InjectQueue } from "@nestjs/bullmq";
 import { Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { IsNull, Repository } from "typeorm";
 import { Job, Queue } from "bullmq";
 import { Issue, PullRequest } from "../entities";
-import { GitHubFetcherService } from "../webhook/github-fetcher.service";
-import { FETCH_QUEUE, FETCH_JOBS, DEFAULT_BACKFILL_DAYS } from "./constants";
+import {
+  GitHubFetcherService,
+  PrFilesGeneration,
+} from "../webhook/github-fetcher.service";
+import {
+  FETCH_QUEUE,
+  FETCH_JOBS,
+  DEFAULT_BACKFILL_DAYS,
+  prFilesJobId,
+} from "./constants";
 
 export interface PrMetadataJobData {
   repoFullName: string;
@@ -15,6 +23,8 @@ export interface PrMetadataJobData {
 export interface PrFilesJobData {
   repoFullName: string;
   prNumber: number;
+  expectedHeadSha?: string | null;
+  expectedBaseSha?: string | null;
 }
 
 export interface BackfillRepoJobData {
@@ -48,8 +58,7 @@ export class FetchProcessor extends WorkerHost {
         break;
       }
       case FETCH_JOBS.PR_FILES: {
-        const { repoFullName, prNumber } = job.data as PrFilesJobData;
-        await this.handlePrFiles(repoFullName, prNumber);
+        await this.handlePrFiles(job.data as PrFilesJobData);
         break;
       }
       case FETCH_JOBS.BACKFILL_REPO: {
@@ -92,18 +101,32 @@ export class FetchProcessor extends WorkerHost {
     }
   }
 
-  private async handlePrFiles(
-    repoFullName: string,
-    prNumber: number,
-  ): Promise<void> {
+  private async handlePrFiles(data: PrFilesJobData): Promise<void> {
+    const { repoFullName, prNumber } = data;
     this.logger.log(`Fetching PR files for ${repoFullName}#${prNumber}`);
 
-    await this.fetcher.fetchAndStorePrFiles(repoFullName, prNumber);
+    const generation = await this.resolvePrFilesGeneration(data);
+    if (!generation) return;
 
-    await this.prRepo.update(
-      { repoFullName, prNumber },
+    const result = await this.fetcher.fetchAndStorePrFiles(
+      repoFullName,
+      prNumber,
+      generation,
+    );
+
+    if (result.status === "stale") {
+      await this.handleStalePrFilesJob(repoFullName, prNumber);
+      return;
+    }
+
+    const updateResult = await this.prRepo.update(
+      this.prGenerationCriteria(repoFullName, prNumber, generation),
       { scoringDataStored: true },
     );
+
+    if (!updateResult.affected) {
+      await this.handleStalePrFilesJob(repoFullName, prNumber);
+    }
   }
 
   private async handleBackfill(
@@ -122,7 +145,7 @@ export class FetchProcessor extends WorkerHost {
     this.logger.log(`Backfilled ${prs.length} PRs from ${repoFullName}`);
 
     // Enqueue follow-up jobs (metadata + files for every PR).
-    for (const { prNumber } of prs) {
+    for (const { prNumber, headSha, baseSha } of prs) {
       await this.fetchQueue.add(
         FETCH_JOBS.PR_METADATA,
         { repoFullName, prNumber },
@@ -135,11 +158,18 @@ export class FetchProcessor extends WorkerHost {
         },
       );
 
+      const expectedHeadSha = headSha ?? null;
+      const expectedBaseSha = baseSha ?? null;
       await this.fetchQueue.add(
         FETCH_JOBS.PR_FILES,
-        { repoFullName, prNumber },
+        { repoFullName, prNumber, expectedHeadSha, expectedBaseSha },
         {
-          jobId: `files-${repoFullName}-${prNumber}`,
+          jobId: prFilesJobId(
+            repoFullName,
+            prNumber,
+            expectedHeadSha,
+            expectedBaseSha,
+          ),
           removeOnComplete: true,
           removeOnFail: 50,
           attempts: 3,
@@ -151,5 +181,75 @@ export class FetchProcessor extends WorkerHost {
     // Fetch and upsert issues
     await this.fetcher.backfillIssues(repoFullName, sinceDate);
     this.logger.log(`Backfilled issues from ${repoFullName}`);
+  }
+
+  private async resolvePrFilesGeneration(
+    data: PrFilesJobData,
+  ): Promise<PrFilesGeneration | null> {
+    if (
+      data.expectedHeadSha !== undefined ||
+      data.expectedBaseSha !== undefined
+    ) {
+      return {
+        headSha: data.expectedHeadSha ?? null,
+        baseSha: data.expectedBaseSha ?? null,
+      };
+    }
+
+    const pr = await this.prRepo.findOneBy({
+      repoFullName: data.repoFullName,
+      prNumber: data.prNumber,
+    });
+    if (!pr) return null;
+
+    return {
+      headSha: pr.headSha ?? null,
+      baseSha: pr.baseSha ?? null,
+    };
+  }
+
+  private async handleStalePrFilesJob(
+    repoFullName: string,
+    prNumber: number,
+  ): Promise<void> {
+    await this.prRepo.update(
+      { repoFullName, prNumber },
+      { scoringDataStored: false },
+    );
+
+    const pr = await this.prRepo.findOneBy({ repoFullName, prNumber });
+    if (!pr) return;
+
+    const expectedHeadSha = pr.headSha ?? null;
+    const expectedBaseSha = pr.baseSha ?? null;
+    await this.fetchQueue.add(
+      FETCH_JOBS.PR_FILES,
+      { repoFullName, prNumber, expectedHeadSha, expectedBaseSha },
+      {
+        jobId: prFilesJobId(
+          repoFullName,
+          prNumber,
+          expectedHeadSha,
+          expectedBaseSha,
+        ),
+        removeOnComplete: true,
+        removeOnFail: 50,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 5000 },
+      },
+    );
+  }
+
+  private prGenerationCriteria(
+    repoFullName: string,
+    prNumber: number,
+    generation: PrFilesGeneration,
+  ): Record<string, unknown> {
+    return {
+      repoFullName,
+      prNumber,
+      headSha: generation.headSha ?? IsNull(),
+      baseSha: generation.baseSha ?? IsNull(),
+    };
   }
 }
