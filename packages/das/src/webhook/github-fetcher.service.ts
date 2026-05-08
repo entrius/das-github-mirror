@@ -481,7 +481,7 @@ export class GitHubFetcherService implements OnModuleInit {
     // Keep removed files when a base SHA is available so deletion scoring has
     // the content that existed before the PR.
     const contentFiles = files.filter(
-      (f) => f.status !== "removed" || !!baseSha,
+      (f) => f.status !== "removed" || baseSha !== null,
     );
     if (contentFiles.length === 0) return;
 
