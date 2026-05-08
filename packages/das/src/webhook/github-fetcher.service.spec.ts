@@ -77,11 +77,11 @@ function graphqlQueryFrom(init: RequestInit): string {
   return query;
 }
 
-void test("fetchAndStoreBatchedContents stores only base content for removed files", async () => {
+void test("fetchAndStoreBatchedContents stores mixed file-status contents", async () => {
   let graphQlCalls = 0;
-  let storedContent: Partial<PrFileContent> | null = null;
+  const storedContents: Partial<PrFileContent>[] = [];
   const service = createService((content) => {
-    storedContent = content;
+    storedContents.push(content);
   });
 
   service.githubFetch = (
@@ -91,6 +91,10 @@ void test("fetchAndStoreBatchedContents stores only base content for removed fil
     graphQlCalls++;
     const query = graphqlQueryFrom(init);
     assert.match(query, /base0: object\(expression: "BASE:src\/old\.ts"\)/);
+    assert.doesNotMatch(query, /base1:/);
+    assert.match(query, /head1: object\(expression: "HEAD:src\/new\.ts"\)/);
+    assert.match(query, /base2: object\(expression: "BASE:src\/live\.ts"\)/);
+    assert.match(query, /head2: object\(expression: "HEAD:src\/live\.ts"\)/);
     assert.doesNotMatch(query, /head0:/);
 
     return Promise.resolve({
@@ -104,6 +108,21 @@ void test("fetchAndStoreBatchedContents stores only base content for removed fil
                 byteSize: 29,
                 isBinary: false,
               },
+              head1: {
+                text: "export const added = true;\n",
+                byteSize: 27,
+                isBinary: false,
+              },
+              base2: {
+                text: "export const live = false;\n",
+                byteSize: 27,
+                isBinary: false,
+              },
+              head2: {
+                text: "export const live = true;\n",
+                byteSize: 26,
+                isBinary: false,
+              },
             },
           },
         }),
@@ -113,7 +132,11 @@ void test("fetchAndStoreBatchedContents stores only base content for removed fil
   await service.fetchAndStoreBatchedContents(
     "owner/repo",
     7,
-    [{ filename: "src/old.ts", status: "removed" }],
+    [
+      { filename: "src/old.ts", status: "removed" },
+      { filename: "src/new.ts", status: "added" },
+      { filename: "src/live.ts", status: "modified" },
+    ],
     "owner",
     "repo",
     "token",
@@ -122,15 +145,35 @@ void test("fetchAndStoreBatchedContents stores only base content for removed fil
   );
 
   assert.equal(graphQlCalls, 1);
-  assert.deepEqual(storedContent, {
-    repoFullName: "owner/repo",
-    prNumber: 7,
-    filename: "src/old.ts",
-    baseContent: "export const removed = true;\n",
-    headContent: null,
-    isBinary: false,
-    byteSize: 29,
-  });
+  assert.deepEqual(storedContents, [
+    {
+      repoFullName: "owner/repo",
+      prNumber: 7,
+      filename: "src/old.ts",
+      baseContent: "export const removed = true;\n",
+      headContent: null,
+      isBinary: false,
+      byteSize: 29,
+    },
+    {
+      repoFullName: "owner/repo",
+      prNumber: 7,
+      filename: "src/new.ts",
+      baseContent: null,
+      headContent: "export const added = true;\n",
+      isBinary: false,
+      byteSize: 27,
+    },
+    {
+      repoFullName: "owner/repo",
+      prNumber: 7,
+      filename: "src/live.ts",
+      baseContent: "export const live = false;\n",
+      headContent: "export const live = true;\n",
+      isBinary: false,
+      byteSize: 26,
+    },
+  ]);
 });
 
 void test("fetchAndStoreBatchedContents skips removed files without a base SHA", async () => {
