@@ -29,6 +29,13 @@ const GRAPHQL_FILES_BATCH_SIZE = 50;
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+function isAtOrAfter(
+  date: string | null | undefined,
+  sinceDate: Date,
+): boolean {
+  return !!date && new Date(date) >= sinceDate;
+}
+
 @Injectable()
 export class GitHubFetcherService implements OnModuleInit {
   private readonly logger = new Logger(GitHubFetcherService.name);
@@ -629,7 +636,7 @@ export class GitHubFetcherService implements OnModuleInit {
   // --- Backfill ---
 
   /**
-   * Page through GraphQL for PRs in a repo created within the last N days.
+   * Page through GraphQL for PRs matching miner API lookback semantics.
    * Upserts each PR. Returns the list of PR numbers so the caller can
    * enqueue follow-up fetch jobs for diffs + closing issues.
    */
@@ -647,7 +654,7 @@ export class GitHubFetcherService implements OnModuleInit {
           pullRequests(
             first: 50,
             after: $cursor,
-            orderBy: {field: CREATED_AT, direction: DESC}
+            orderBy: {field: UPDATED_AT, direction: DESC}
           ) {
             pageInfo { hasNextPage endCursor }
             nodes {
@@ -656,6 +663,7 @@ export class GitHubFetcherService implements OnModuleInit {
               bodyText
               state
               createdAt
+              updatedAt
               closedAt
               mergedAt
               lastEditedAt
@@ -761,10 +769,15 @@ export class GitHubFetcherService implements OnModuleInit {
 
       let shouldStop = false;
       for (const pr of page.nodes) {
-        // Ordered DESC by created_at — stop once we cross the cutoff
-        if (new Date(pr.createdAt) < sinceDate) {
+        // Ordered DESC by updated_at. Any PR merged/created inside the
+        // lookback window must have updated_at inside the window too.
+        if (!isAtOrAfter(pr.updatedAt ?? pr.createdAt, sinceDate)) {
           shouldStop = true;
           break;
+        }
+
+        if (!this.isPullRequestInBackfillWindow(pr, sinceDate)) {
+          continue;
         }
 
         await this.prRepo.upsert(
@@ -834,7 +847,7 @@ export class GitHubFetcherService implements OnModuleInit {
   }
 
   /**
-   * Page through GraphQL for issues in a repo created within the last N days.
+   * Page through GraphQL for issues matching miner API lookback semantics.
    * Upserts each issue.
    */
   async backfillIssues(repoFullName: string, sinceDate: Date): Promise<void> {
@@ -847,7 +860,7 @@ export class GitHubFetcherService implements OnModuleInit {
           issues(
             first: 50,
             after: $cursor,
-            orderBy: {field: CREATED_AT, direction: DESC}
+            orderBy: {field: UPDATED_AT, direction: DESC}
           ) {
             pageInfo { hasNextPage endCursor }
             nodes {
@@ -926,9 +939,13 @@ export class GitHubFetcherService implements OnModuleInit {
 
       let shouldStop = false;
       for (const issue of page.nodes) {
-        if (new Date(issue.createdAt) < sinceDate) {
+        if (!isAtOrAfter(issue.updatedAt ?? issue.createdAt, sinceDate)) {
           shouldStop = true;
           break;
+        }
+
+        if (!this.isIssueInBackfillWindow(issue, sinceDate)) {
+          continue;
         }
 
         await this.issueRepo.upsert(
@@ -964,6 +981,19 @@ export class GitHubFetcherService implements OnModuleInit {
       if (shouldStop || !page.pageInfo.hasNextPage) break;
       cursor = page.pageInfo.endCursor;
     }
+  }
+
+  private isPullRequestInBackfillWindow(pr: any, sinceDate: Date): boolean {
+    if (pr.state === "OPEN") return isAtOrAfter(pr.createdAt, sinceDate);
+    if (pr.state === "MERGED") return isAtOrAfter(pr.mergedAt, sinceDate);
+    if (pr.state === "CLOSED") return isAtOrAfter(pr.createdAt, sinceDate);
+    return false;
+  }
+
+  private isIssueInBackfillWindow(issue: any, sinceDate: Date): boolean {
+    if (issue.state === "OPEN") return isAtOrAfter(issue.createdAt, sinceDate);
+    if (issue.state === "CLOSED") return isAtOrAfter(issue.closedAt, sinceDate);
+    return false;
   }
 
   /**
