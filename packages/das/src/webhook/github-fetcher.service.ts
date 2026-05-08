@@ -477,8 +477,11 @@ export class GitHubFetcherService implements OnModuleInit {
     headSha: string,
     baseSha: string | null,
   ): Promise<void> {
-    // Only fetch contents for files that have a meaningful version to fetch
-    const scored = files.filter((f) => f.status !== "removed");
+    // Only fetch contents for files that have a meaningful version to fetch.
+    // Removed files still need their base-side blob for scoring.
+    const scored = files.filter(
+      (f) => f.status !== "removed" || baseSha !== null,
+    );
     if (scored.length === 0) return;
 
     let batchSize = GRAPHQL_FILES_BATCH_SIZE;
@@ -537,11 +540,13 @@ export class GitHubFetcherService implements OnModuleInit {
           `base${i}: object(expression: "${baseExpr}") { ... on Blob { text byteSize isBinary } }`,
         );
       }
-      // Head version (already filtered out removed files at caller)
-      const headExpr = this.escapeGraphql(`${headSha}:${file.filename}`);
-      fields.push(
-        `head${i}: object(expression: "${headExpr}") { ... on Blob { text byteSize isBinary } }`,
-      );
+      // Head version: skip for removed files because the path no longer exists.
+      if (file.status !== "removed") {
+        const headExpr = this.escapeGraphql(`${headSha}:${file.filename}`);
+        fields.push(
+          `head${i}: object(expression: "${headExpr}") { ... on Blob { text byteSize isBinary } }`,
+        );
+      }
     }
 
     const query = `
