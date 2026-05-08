@@ -15,8 +15,10 @@ export class ReviewHandler {
     const review = payload.review;
     const repoFullName: string = payload.repository.full_name;
 
-    // Only store submitted reviews (not pending/dismissed)
-    if (payload.action !== "submitted") return;
+    // Store submitted reviews and keep dismissed reviews from contributing to
+    // review-summary counts.
+    if (payload.action !== "submitted" && payload.action !== "dismissed")
+      return;
 
     const data: Partial<Review> = {
       repoFullName,
@@ -24,7 +26,10 @@ export class ReviewHandler {
       reviewerGithubId: String(review.user.id),
       reviewerLogin: review.user.login,
       reviewerAssociation: review.author_association,
-      reviewState: review.state.toUpperCase(),
+      reviewState:
+        payload.action === "dismissed"
+          ? "DISMISSED"
+          : review.state.toUpperCase(),
       submittedAt: review.submitted_at,
     };
 
