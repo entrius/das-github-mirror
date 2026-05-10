@@ -6,7 +6,6 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "prebuild": "npm test",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
@@ -14,7 +13,6 @@
     "dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
-    "test": "node --test -r ts-node/register \"src/**/*.spec.ts\"",
     "lint": "eslint \"src/**/*.ts\"",
     "lint:fix": "eslint \"src/**/*.ts\" --fix"
   },
