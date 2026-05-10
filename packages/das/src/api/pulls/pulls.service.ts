@@ -16,7 +16,7 @@ export class PullsService {
     const rows = await this.dataSource.query(
       `
       SELECT
-        p.repo_full_name,
+        LOWER(p.repo_full_name)   AS repo_full_name,
         p.pr_number,
         p.head_sha,
         p.base_sha,
@@ -44,8 +44,13 @@ export class PullsService {
             AND f.pr_number      = p.pr_number
         ), '[]'::json) AS files
       FROM pull_requests p
-      WHERE p.repo_full_name = $1
-        AND p.pr_number      = $2
+      -- Look up the canonical-case repo_full_name via the small repos
+      -- table so the pull_requests PK seek stays index-driven
+      WHERE p.repo_full_name = (
+          SELECT repo_full_name FROM repos
+          WHERE LOWER(repo_full_name) = LOWER($1)
+        )
+        AND p.pr_number = $2
       `,
       [repoFullName, prNumber],
     );
