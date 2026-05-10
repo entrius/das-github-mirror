@@ -20,13 +20,13 @@ export class MinersService {
     const rows = await this.dataSource.query(
       `
       SELECT
-        p.repo_full_name,
+        LOWER(p.repo_full_name)         AS repo_full_name,
         p.pr_number,
-        p.title,
+        COALESCE(p.title, '')           AS title,
         p.body,
         p.state,
         p.author_github_id,
-        p.author_login,
+        COALESCE(p.author_login, '')    AS author_login,
         p.author_association,
         p.created_at,
         p.closed_at,
@@ -35,14 +35,14 @@ export class MinersService {
         p.merged_by_login,
         p.base_ref,
         p.head_ref,
-        p.head_repo_full_name,
+        LOWER(p.head_repo_full_name)    AS head_repo_full_name,
         r.default_branch,
         p.head_sha,
         p.base_sha,
         p.merge_base_sha,
-        p.additions,
-        p.deletions,
-        p.commits_count,
+        COALESCE(p.additions, 0)        AS additions,
+        COALESCE(p.deletions, 0)        AS deletions,
+        COALESCE(p.commits_count, 0)    AS commits_count,
         p.scoring_data_stored,
         (p.last_edited_at IS NOT NULL AND p.merged_at IS NOT NULL AND p.last_edited_at > p.merged_at)
           AS edited_after_merge,
@@ -72,7 +72,7 @@ export class MinersService {
         COALESCE((
           SELECT json_agg(json_build_object(
             'number',             li.issue_number,
-            'title',              li.issue_title,
+            'title',              COALESCE(li.issue_title, ''),
             'state',              li.issue_state,
             'state_reason',       li.issue_state_reason,
             'author_github_id',   li.issue_author_github_id,
@@ -134,9 +134,9 @@ export class MinersService {
     const rows = await this.dataSource.query(
       `
       SELECT
-        i.repo_full_name,
+        LOWER(i.repo_full_name)         AS repo_full_name,
         i.issue_number,
-        i.title,
+        COALESCE(i.title, '')           AS title,
         i.state,
         i.state_reason,
         i.author_github_id,
@@ -188,8 +188,10 @@ export class MinersService {
                 AND plt.pr_number      = sp.pr_number
             ), '[]'::json),
             'review_summary', json_build_object(
-              'maintainer_changes_requested_count',
-                COALESCE(rs.maintainer_changes_requested_count, 0)
+              'maintainer_changes_requested_count', COALESCE(rs.maintainer_changes_requested_count, 0),
+              'changes_requested_count',             COALESCE(rs.changes_requested_count, 0),
+              'approved_count',                      COALESCE(rs.approved_count, 0),
+              'commented_count',                     COALESCE(rs.commented_count, 0)
             )
           )
           FROM pull_requests sp
@@ -198,6 +200,10 @@ export class MinersService {
            AND rs.pr_number      = sp.pr_number
           WHERE sp.repo_full_name = i.repo_full_name
             AND sp.pr_number      = i.solved_by_pr
+            -- Skip null-author solving PRs (no one to credit)
+            AND sp.author_github_id IS NOT NULL
+            -- Skip corrupted MERGED-without-merged_at shape
+            AND NOT (sp.state = 'MERGED' AND sp.merged_at IS NULL)
         ) AS solving_pr
       FROM issues i
       WHERE i.author_github_id = $1

@@ -33,7 +33,7 @@ export class PullRequestHandler {
       authorLogin: pr.user.login,
       authorAssociation: pr.author_association,
       title: pr.title,
-      state: pr.merged ? "MERGED" : pr.state.toUpperCase(),
+      state: pr.merged && pr.merged_at ? "MERGED" : pr.state.toUpperCase(),
       createdAt: pr.created_at,
       closedAt: pr.closed_at ?? null,
       mergedAt: pr.merged_at ?? null,
