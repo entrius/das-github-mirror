@@ -139,20 +139,15 @@ export class FetchProcessor extends WorkerHost {
     );
     this.logger.log(`Backfilled ${prs.length} PRs from ${repoFullName}`);
 
-    // Enqueue follow-up jobs (metadata + files for every PR).
-    for (const { prNumber, headSha, baseSha } of prs) {
-      await this.fetchQueue.add(
-        FETCH_JOBS.PR_METADATA,
-        { repoFullName, prNumber },
-        {
-          jobId: `meta-${repoFullName}-${prNumber}`,
-          removeOnComplete: true,
-          removeOnFail: 50,
-          attempts: 3,
-          backoff: { type: "exponential", delay: 5000 },
-        },
-      );
+    // Fetch and upsert issues
+    await this.fetcher.backfillIssues(repoFullName, sinceDate);
+    this.logger.log(`Backfilled issues from ${repoFullName}`);
 
+    await this.reconcileSolvedByPr(repoFullName);
+
+    // Enqueue diff/file backfill after issue rows exist and solved_by_pr has
+    // been reconciled from the PR links loaded by backfillPullRequests().
+    for (const { prNumber, headSha, baseSha } of prs) {
       await this.enqueuePrFilesJob(
         repoFullName,
         prNumber,
@@ -160,10 +155,40 @@ export class FetchProcessor extends WorkerHost {
         baseSha ?? null,
       );
     }
+  }
 
-    // Fetch and upsert issues
-    await this.fetcher.backfillIssues(repoFullName, sinceDate);
-    this.logger.log(`Backfilled issues from ${repoFullName}`);
+  private async reconcileSolvedByPr(repoFullName: string): Promise<void> {
+    await this.issueRepo.query(
+      `
+        WITH resolved AS (
+          SELECT
+            i.repo_full_name,
+            i.issue_number,
+            CASE
+              WHEN i.state = 'OPEN' THEN NULL
+              ELSE (
+                SELECT pr.pr_number
+                FROM pull_requests pr
+                WHERE pr.repo_full_name = i.repo_full_name
+                  AND pr.state = 'MERGED'
+                  AND pr.closing_issue_numbers IS NOT NULL
+                  AND i.issue_number = ANY(pr.closing_issue_numbers)
+                ORDER BY pr.merged_at ASC NULLS LAST, pr.pr_number ASC
+                LIMIT 1
+              )
+            END AS solved_by_pr
+          FROM issues i
+          WHERE i.repo_full_name = $1
+        )
+        UPDATE issues i
+        SET solved_by_pr = resolved.solved_by_pr
+        FROM resolved
+        WHERE i.repo_full_name = resolved.repo_full_name
+          AND i.issue_number = resolved.issue_number
+          AND i.solved_by_pr IS DISTINCT FROM resolved.solved_by_pr
+      `,
+      [repoFullName],
+    );
   }
 
   private async handleStalePrFilesJob(

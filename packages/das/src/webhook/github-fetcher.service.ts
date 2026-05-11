@@ -630,8 +630,9 @@ export class GitHubFetcherService implements OnModuleInit {
 
   /**
    * Page through GraphQL for PRs in a repo created within the last N days.
-   * Upserts each PR. Returns the list of PR numbers so the caller can
-   * enqueue follow-up fetch jobs for diffs + closing issues.
+   * Upserts each PR, including the merged issue-closing links needed to
+   * reconcile issues during backfill. Returns the list of PR numbers so the
+   * caller can enqueue follow-up fetch jobs for diffs.
    */
   async backfillPullRequests(
     repoFullName: string,
@@ -661,6 +662,9 @@ export class GitHubFetcherService implements OnModuleInit {
               closedAt
               mergedAt
               lastEditedAt
+              closingIssuesReferences(first: 10) {
+                nodes { number }
+              }
               merged
               author {
                 login
@@ -787,6 +791,9 @@ export class GitHubFetcherService implements OnModuleInit {
             closedAt: pr.closedAt ?? null,
             mergedAt: pr.mergedAt ?? null,
             lastEditedAt: pr.lastEditedAt ?? null,
+            closingIssueNumbers: (pr.closingIssuesReferences?.nodes ?? []).map(
+              (issue: { number: number }) => issue.number,
+            ),
             mergedByLogin: pr.mergedBy?.login ?? null,
             baseRef: pr.baseRef?.name ?? null,
             headRef: pr.headRef?.name ?? null,
