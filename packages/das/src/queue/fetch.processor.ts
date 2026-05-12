@@ -79,6 +79,11 @@ export class FetchProcessor extends WorkerHost {
   ): Promise<void> {
     this.logger.log(`Fetching PR metadata for ${repoFullName}#${prNumber}`);
 
+    const prBefore = await this.prRepo.findOneBy({ repoFullName, prNumber });
+    const previousClosingIssueNumbers = new Set(
+      prBefore?.closingIssueNumbers ?? [],
+    );
+
     const { closingIssueNumbers, body, lastEditedAt } =
       await this.fetcher.fetchPrMetadata(repoFullName, prNumber);
 
@@ -91,13 +96,54 @@ export class FetchProcessor extends WorkerHost {
       },
     );
 
-    // If this PR is merged, mark each linked issue as solved_by_pr
     const pr = await this.prRepo.findOneBy({ repoFullName, prNumber });
-    if (pr?.state === "MERGED" && closingIssueNumbers.length > 0) {
-      for (const issueNumber of closingIssueNumbers) {
-        await this.issueRepo.update(
-          { repoFullName, issueNumber },
-          { solvedByPr: prNumber },
+    const currentClosingIssueNumbers = new Set(closingIssueNumbers);
+
+    const removedIssueNumbers = [...previousClosingIssueNumbers].filter(
+      (issueNumber) => !currentClosingIssueNumbers.has(issueNumber),
+    );
+
+    // Always clear stale mappings that were previously linked to this PR but
+    // are no longer linked after metadata refresh.
+    if (removedIssueNumbers.length > 0) {
+      await this.issueRepo.query(
+        `UPDATE issues
+         SET solved_by_pr = NULL
+         WHERE repo_full_name = $1
+           AND solved_by_pr = $2
+           AND issue_number = ANY($3::int[])`,
+        [repoFullName, prNumber, removedIssueNumbers],
+      );
+    }
+
+    if (pr?.state === "MERGED") {
+      // Current links on merged PRs should point to this PR.
+      if (closingIssueNumbers.length > 0) {
+        await this.issueRepo.query(
+          `UPDATE issues
+           SET solved_by_pr = $3
+           WHERE repo_full_name = $1
+             AND issue_number = ANY($2::int[])`,
+          [repoFullName, closingIssueNumbers, prNumber],
+        );
+      }
+    } else {
+      // If PR is not merged (e.g. reopened), it should not be solver for any
+      // issue currently or previously linked by closing references.
+      const clearCandidates = [
+        ...new Set([
+          ...previousClosingIssueNumbers,
+          ...currentClosingIssueNumbers,
+        ]),
+      ];
+      if (clearCandidates.length > 0) {
+        await this.issueRepo.query(
+          `UPDATE issues
+           SET solved_by_pr = NULL
+           WHERE repo_full_name = $1
+             AND solved_by_pr = $2
+             AND issue_number = ANY($3::int[])`,
+          [repoFullName, prNumber, clearCandidates],
         );
       }
     }
