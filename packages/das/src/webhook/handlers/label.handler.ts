@@ -32,6 +32,7 @@ export class LabelHandler {
 
     const targetNumber: number =
       source === "pr" ? payload.pull_request.number : payload.issue.number;
+    const labelEventTimestamp = this.resolveLabelEventTimestamp(payload, source);
 
     // Append to label_events log. Actor's repo role is resolved at read time
     // via contributor_repo_roles using stored PR/issue, review, and comment
@@ -44,7 +45,7 @@ export class LabelHandler {
       action,
       actorGithubId: sender ? String(sender.id) : null,
       actorLogin: sender?.login ?? null,
-      timestamp: new Date().toISOString(),
+      timestamp: labelEventTimestamp,
     });
 
     // Update current labels snapshot on the parent row
@@ -64,5 +65,18 @@ export class LabelHandler {
         { labels: currentLabels },
       );
     }
+  }
+
+  /**
+   * Live label webhooks do not include the exact timeline event createdAt used
+   * by backfill. Prefer GitHub's resource updated_at as a best-effort proxy so
+   * ordering tracks GitHub event time more closely than mirror receipt time.
+   */
+  private resolveLabelEventTimestamp(
+    payload: Record<string, any>,
+    source: "issue" | "pr",
+  ): string {
+    const target = source === "pr" ? payload.pull_request : payload.issue;
+    return target?.updated_at ?? new Date().toISOString();
   }
 }
