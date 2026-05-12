@@ -380,10 +380,9 @@ export class GitHubFetcherService implements OnModuleInit {
 
     // 3. Fetch file contents in batches (base + head in one GraphQL call each)
     if (!pr.headSha) {
-      this.logger.warn(
-        `PR ${repoFullName}#${prNumber} has no head SHA — skipping content fetch`,
+      throw new Error(
+        `PR ${repoFullName}#${prNumber} has no head SHA; cannot fetch content`,
       );
-      return;
     }
 
     // Prefer merge-base SHA (true common ancestor) over base SHA for
@@ -507,10 +506,9 @@ export class GitHubFetcherService implements OnModuleInit {
           batchSize = newSize;
           // Retry same i with smaller batch
         } else {
-          this.logger.warn(
-            `GraphQL content batch failed at min size ${minBatchSize}: ${err}. Skipping batch.`,
+          throw new Error(
+            `GraphQL content batch failed at min size ${minBatchSize}: ${err}`,
           );
-          i += batch.length;
         }
       }
     }
