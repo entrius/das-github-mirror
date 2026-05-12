@@ -48,16 +48,22 @@ export class WebhookController {
       return { accepted: false };
     }
 
-    await this.webhookService.handleEvent(
-      event,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      req.body as Record<string, any>,
-      deliveryId,
-    );
+    try {
+      await this.webhookService.handleEvent(
+        event,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        req.body as Record<string, any>,
+        deliveryId,
+      );
 
-    // Only mark processed on handler success — a thrown error leaves
-    // processed_at NULL so GitHub's retry will re-claim the row.
-    await this.webhookService.markProcessed(deliveryId);
+      // Only mark processed on handler success.
+      await this.webhookService.markProcessed(deliveryId);
+    } catch (err) {
+      // Release the in-flight lease on failure so retries can proceed
+      // immediately without waiting for lease expiry.
+      await this.webhookService.releaseDelivery(deliveryId);
+      throw err;
+    }
 
     return { accepted: true };
   }
