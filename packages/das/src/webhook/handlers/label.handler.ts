@@ -48,11 +48,14 @@ export class LabelHandler {
       timestamp: labelEventTimestamp,
     });
 
-    // Update current labels snapshot on the parent row
-    const currentLabels: string[] =
-      source === "pr"
-        ? (payload.pull_request.labels ?? []).map((l: any) => l.name)
-        : (payload.issue.labels ?? []).map((l: any) => l.name);
+    // Rebuild the parent-row labels from the event log instead of trusting
+    // the webhook payload snapshot, which may be stale if deliveries arrive
+    // late, are retried manually, or are processed out of order.
+    const currentLabels = await this.loadCurrentLabels(
+      repoFullName,
+      targetNumber,
+      source,
+    );
 
     if (source === "pr") {
       await this.prRepo.update(
@@ -78,5 +81,33 @@ export class LabelHandler {
   ): string {
     const target = source === "pr" ? payload.pull_request : payload.issue;
     return target?.updated_at ?? new Date().toISOString();
+  }
+
+  private async loadCurrentLabels(
+    repoFullName: string,
+    targetNumber: number,
+    targetType: "issue" | "pr",
+  ): Promise<string[]> {
+    const rows: Array<{ label_name: string }> = await this.labelEventRepo.query(
+      `
+        WITH latest_events AS (
+          SELECT DISTINCT ON (label_name)
+            label_name,
+            action
+          FROM label_events
+          WHERE repo_full_name = $1
+            AND target_number = $2
+            AND target_type = $3
+          ORDER BY label_name, timestamp DESC
+        )
+        SELECT label_name
+        FROM latest_events
+        WHERE action = 'labeled'
+        ORDER BY label_name ASC
+      `,
+      [repoFullName, targetNumber, targetType],
+    );
+
+    return rows.map((row) => row.label_name);
   }
 }
