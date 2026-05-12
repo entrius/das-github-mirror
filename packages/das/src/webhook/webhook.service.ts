@@ -14,6 +14,7 @@ import { InstallationHandler } from "./handlers/installation.handler";
 @Injectable()
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
+  private static readonly DELIVERY_CLAIM_STALE_MINUTES = 15;
 
   constructor(
     @InjectRepository(Repo)
@@ -32,32 +33,37 @@ export class WebhookService {
    * Claim a delivery for processing.
    * Returns true if this caller should process the event, false to skip.
    *
-   * Uses INSERT ... ON CONFLICT DO NOTHING as an atomic claim. If the row
-   * already exists with processed_at set, it's a confirmed duplicate and we
-   * skip. If it exists with processed_at NULL, the prior attempt crashed
-   * mid-handler — we reprocess (all handlers are upserts, so that's safe).
+   * Atomic claim behavior:
+   * - First sight: insert row and claim immediately.
+   * - Duplicate while in-flight: skip (single active claimer).
+   * - Duplicate after success: skip (processed_at set).
+   * - Stale in-flight claim (likely crash): reclaim after timeout.
    */
   async claimDelivery(deliveryId: string): Promise<boolean> {
-    const inserted: unknown[] = await this.dataSource.query(
-      `INSERT INTO webhook_deliveries (delivery_id)
-       VALUES ($1)
-       ON CONFLICT (delivery_id) DO NOTHING
+    const claimed: unknown[] = await this.dataSource.query(
+      `INSERT INTO webhook_deliveries (delivery_id, processing_started_at)
+       VALUES ($1, NOW())
+       ON CONFLICT (delivery_id) DO UPDATE
+       SET processing_started_at = NOW()
+       WHERE webhook_deliveries.processed_at IS NULL
+         AND (
+           webhook_deliveries.processing_started_at IS NULL
+           OR webhook_deliveries.processing_started_at <
+              NOW() - ($2::text || ' minutes')::interval
+         )
        RETURNING delivery_id`,
-      [deliveryId],
+      [deliveryId, WebhookService.DELIVERY_CLAIM_STALE_MINUTES],
     );
-    if (inserted.length > 0) return true;
 
-    const existing: { processed_at: string | null }[] =
-      await this.dataSource.query(
-        `SELECT processed_at FROM webhook_deliveries WHERE delivery_id = $1`,
-        [deliveryId],
-      );
-    return existing[0]?.processed_at == null;
+    return claimed.length > 0;
   }
 
   async markProcessed(deliveryId: string): Promise<void> {
     await this.dataSource.query(
-      `UPDATE webhook_deliveries SET processed_at = NOW() WHERE delivery_id = $1`,
+      `UPDATE webhook_deliveries
+       SET processed_at = NOW(),
+           processing_started_at = NULL
+       WHERE delivery_id = $1`,
       [deliveryId],
     );
   }

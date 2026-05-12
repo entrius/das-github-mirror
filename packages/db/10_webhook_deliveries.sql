@@ -7,6 +7,7 @@
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
     delivery_id     VARCHAR(255)    PRIMARY KEY,
     received_at     TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    processing_started_at TIMESTAMPTZ,
     processed_at    TIMESTAMPTZ
 );
 
@@ -14,6 +15,7 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 -- treated as fully processed so GitHub retries for historic deliveries
 -- aren't re-run.
 ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;
+ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ;
 UPDATE webhook_deliveries SET processed_at = received_at WHERE processed_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_age ON webhook_deliveries(received_at);
