@@ -20,6 +20,11 @@ interface InstallationToken {
   expiresAt: number;
 }
 
+interface ClosingIssueReference {
+  number?: number;
+  repository?: { nameWithOwner?: string } | null;
+}
+
 // Files larger than this are stored with null content (AST parsing is wasteful past this).
 const MAX_FILE_SIZE_BYTES = 1_000_000;
 
@@ -280,7 +285,10 @@ export class GitHubFetcherService implements OnModuleInit {
             bodyText
             lastEditedAt
             closingIssuesReferences(first: 10) {
-              nodes { number }
+              nodes {
+                number
+                repository { nameWithOwner }
+              }
             }
           }
         }
@@ -310,10 +318,27 @@ export class GitHubFetcherService implements OnModuleInit {
     const nodes = pr.closingIssuesReferences?.nodes ?? [];
 
     return {
-      closingIssueNumbers: nodes.map((n: { number: number }) => n.number),
+      closingIssueNumbers: this.sameRepoClosingIssueNumbers(
+        repoFullName,
+        nodes,
+      ),
       body: pr.bodyText ?? null,
       lastEditedAt: pr.lastEditedAt ?? null,
     };
+  }
+
+  private sameRepoClosingIssueNumbers(
+    repoFullName: string,
+    nodes: ClosingIssueReference[],
+  ): number[] {
+    const expectedRepo = repoFullName.toLowerCase();
+    return nodes
+      .filter(
+        (node) =>
+          node.repository?.nameWithOwner?.toLowerCase() === expectedRepo,
+      )
+      .map((node) => node.number)
+      .filter((number): number is number => typeof number === "number");
   }
 
   // --- PR files + contents (REST for list, batched GraphQL for contents) ---
