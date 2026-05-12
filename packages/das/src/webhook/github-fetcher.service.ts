@@ -20,11 +20,17 @@ interface InstallationToken {
   expiresAt: number;
 }
 
+interface ClosingIssueReference {
+  number: number;
+}
+
 // Files larger than this are stored with null content (AST parsing is wasteful past this).
 const MAX_FILE_SIZE_BYTES = 1_000_000;
 
 // Starting batch size for batched GraphQL file-content requests. Halves on failure.
 const GRAPHQL_FILES_BATCH_SIZE = 50;
+
+const GRAPHQL_CLOSING_ISSUES_PAGE_SIZE = 100;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -274,12 +280,16 @@ export class GitHubFetcherService implements OnModuleInit {
     const token = await this.getTokenForRepo(repoFullName);
 
     const query = `
-      query($owner: String!, $repo: String!, $pr: Int!) {
+      query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
         repository(owner: $owner, name: $repo) {
           pullRequest(number: $pr) {
             bodyText
             lastEditedAt
-            closingIssuesReferences(first: 10) {
+            closingIssuesReferences(
+              first: ${GRAPHQL_CLOSING_ISSUES_PAGE_SIZE},
+              after: $cursor
+            ) {
+              pageInfo { hasNextPage endCursor }
               nodes { number }
             }
           }
@@ -287,32 +297,53 @@ export class GitHubFetcherService implements OnModuleInit {
       }
     `;
 
-    const res = await this.githubFetch("https://api.github.com/graphql", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        query,
-        variables: { owner, repo, pr: prNumber },
-      }),
-    });
+    const closingIssueNodes: ClosingIssueReference[] = [];
+    let bodyText: string | null = null;
+    let lastEditedAt: string | null = null;
+    let cursor: string | null = null;
 
-    if (!res.ok) {
-      throw new Error(
-        `GraphQL PR metadata fetch failed: ${res.status} ${await res.text()}`,
-      );
+    while (true) {
+      const res = await this.githubFetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          variables: { owner, repo, pr: prNumber, cursor },
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(
+          `GraphQL PR metadata fetch failed: ${res.status} ${await res.text()}`,
+        );
+      }
+
+      const body: any = await res.json();
+      const pr = body.data?.repository?.pullRequest ?? {};
+      bodyText = pr.bodyText ?? null;
+      lastEditedAt = pr.lastEditedAt ?? null;
+
+      const closingIssues = pr.closingIssuesReferences;
+      closingIssueNodes.push(...(closingIssues?.nodes ?? []));
+
+      if (!closingIssues?.pageInfo?.hasNextPage) break;
+      cursor = closingIssues.pageInfo.endCursor ?? null;
+      if (!cursor) {
+        throw new Error(
+          `GraphQL PR metadata fetch missing closing issue cursor for ${repoFullName}#${prNumber}`,
+        );
+      }
     }
 
-    const body: any = await res.json();
-    const pr = body.data?.repository?.pullRequest ?? {};
-    const nodes = pr.closingIssuesReferences?.nodes ?? [];
-
     return {
-      closingIssueNumbers: nodes.map((n: { number: number }) => n.number),
-      body: pr.bodyText ?? null,
-      lastEditedAt: pr.lastEditedAt ?? null,
+      closingIssueNumbers: closingIssueNodes.map(
+        (n: ClosingIssueReference) => n.number,
+      ),
+      body: bodyText,
+      lastEditedAt,
     };
   }
 
