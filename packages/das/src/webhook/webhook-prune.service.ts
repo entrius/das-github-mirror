@@ -28,12 +28,19 @@ export class WebhookPruneService implements OnModuleInit, OnModuleDestroy {
 
   private async prune(): Promise<void> {
     try {
+      // Keep processed delivery IDs as permanent dedup tombstones.
+      // If we delete them by age, old GitHub redeliveries can be accepted
+      // again as "new" deliveries and replay side effects.
+      //
+      // We only clear stale in-flight claims (processed_at IS NULL), which
+      // recovers rows left behind by crashes without weakening dedup safety.
       const result: { affectedRows?: number }[] = await this.dataSource.query(
         `DELETE FROM webhook_deliveries
-         WHERE received_at < NOW() - INTERVAL '${RETENTION_DAYS} days'`,
+         WHERE processed_at IS NULL
+           AND received_at < NOW() - INTERVAL '${RETENTION_DAYS} days'`,
       );
       this.logger.log(
-        `Pruned webhook_deliveries older than ${RETENTION_DAYS} days (${JSON.stringify(result)})`,
+        `Pruned stale unprocessed webhook_deliveries older than ${RETENTION_DAYS} days (${JSON.stringify(result)})`,
       );
     } catch (err) {
       this.logger.error(`Prune failed: ${String(err)}`);
