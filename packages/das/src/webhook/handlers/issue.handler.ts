@@ -50,8 +50,14 @@ export class IssueHandler {
 
     await this.issueRepo.upsert(data, ["repoFullName", "issueNumber"]);
 
-    await this.repoRepo.update(repoFullName, {
+    const repoUpdate: Partial<Repo> = {
       lastEventAt: new Date().toISOString(),
-    });
+    };
+    const defaultBranch: string | null =
+      payload.repository?.default_branch ?? null;
+    if (defaultBranch) {
+      repoUpdate.defaultBranch = defaultBranch;
+    }
+    await this.repoRepo.update(repoFullName, repoUpdate);
   }
 }

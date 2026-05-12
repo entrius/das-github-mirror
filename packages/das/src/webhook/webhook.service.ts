@@ -91,6 +91,9 @@ export class WebhookService {
     }
 
     switch (event) {
+      case "repository":
+        await this.handleRepositoryEvent(payload);
+        break;
       case "pull_request":
         await this.pullRequestHandler.handle(payload);
         if (payload.action === "labeled" || payload.action === "unlabeled") {
@@ -118,5 +121,23 @@ export class WebhookService {
       default:
         this.logger.debug(`Unhandled event type: ${event}`);
     }
+  }
+
+  private async handleRepositoryEvent(
+    payload: Record<string, any>,
+  ): Promise<void> {
+    const repoFullName: string | undefined = payload.repository?.full_name;
+    if (!repoFullName) return;
+
+    const repoUpdate: Partial<Repo> = {
+      lastEventAt: new Date().toISOString(),
+    };
+    const defaultBranch: string | null =
+      payload.repository?.default_branch ?? null;
+    if (defaultBranch) {
+      repoUpdate.defaultBranch = defaultBranch;
+    }
+
+    await this.repoRepo.update(repoFullName, repoUpdate);
   }
 }
