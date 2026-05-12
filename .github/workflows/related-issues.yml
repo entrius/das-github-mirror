@@ -1,0 +1,22 @@
+name: Validate Related Issues
+
+on:
+  pull_request:
+    branches: [main, test]
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  related-issues:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate Related Issues section
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node .github/scripts/validate-related-issues.js
