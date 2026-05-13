@@ -15,7 +15,12 @@ WITH latest_events AS (
         ON crr.author_github_id = le.actor_github_id
         AND crr.repo_full_name = le.repo_full_name
     WHERE le.target_type = 'issue'
-    ORDER BY le.repo_full_name, le.target_number, le.label_name, le.timestamp DESC
+    ORDER BY
+        le.repo_full_name,
+        le.target_number,
+        le.label_name,
+        le.timestamp DESC,
+        le.id DESC
 )
 SELECT
     repo_full_name,

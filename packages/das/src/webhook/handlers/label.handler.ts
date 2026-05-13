@@ -32,6 +32,7 @@ export class LabelHandler {
 
     const targetNumber: number =
       source === "pr" ? payload.pull_request.number : payload.issue.number;
+    const eventTimestamp = this.resolveEventTimestamp(payload, source);
 
     // Append to label_events log. Actor's repo role is resolved at read time
     // via contributor_repo_roles using stored PR/issue, review, and comment
@@ -44,7 +45,7 @@ export class LabelHandler {
       action,
       actorGithubId: sender ? String(sender.id) : null,
       actorLogin: sender?.login ?? null,
-      timestamp: new Date().toISOString(),
+      timestamp: eventTimestamp,
     });
 
     // Update current labels snapshot on the parent row
@@ -64,5 +65,29 @@ export class LabelHandler {
         { labels: currentLabels },
       );
     }
+  }
+
+  /**
+   * Prefer GitHub object time over ingest time so delayed webhook delivery does
+   * not reorder label history incorrectly. Fallback to current time when
+   * updated_at is missing or invalid.
+   */
+  private resolveEventTimestamp(
+    payload: Record<string, any>,
+    source: "issue" | "pr",
+  ): string {
+    const updatedAtRaw =
+      source === "pr"
+        ? payload.pull_request?.updated_at
+        : payload.issue?.updated_at;
+
+    if (typeof updatedAtRaw === "string") {
+      const parsed = Date.parse(updatedAtRaw);
+      if (!Number.isNaN(parsed)) {
+        return new Date(parsed).toISOString();
+      }
+    }
+
+    return new Date().toISOString();
   }
 }
