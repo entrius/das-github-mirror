@@ -82,14 +82,16 @@ export class PullRequestHandler {
       );
     }
 
-    // Enqueue diff fetch on open, push, or merge
+    // Enqueue diff fetch on open, push, merge, or base retarget
     const diffActions = ["opened", "synchronize", "closed"];
+    const isBaseRetarget = this.isBaseBranchRetargetEdit(action, payload);
     const shouldFetchDiff =
-      diffActions.includes(action) && (action !== "closed" || pr.merged);
+      isBaseRetarget ||
+      (diffActions.includes(action) && (action !== "closed" || pr.merged));
 
     if (shouldFetchDiff) {
-      // Reset scoring flag on new pushes
-      if (action === "synchronize") {
+      // Reset scoring flag on new pushes or base retargets
+      if (action === "synchronize" || isBaseRetarget) {
         await this.prRepo.update(
           { repoFullName, prNumber },
           { scoringDataStored: false },
@@ -116,5 +118,12 @@ export class PullRequestHandler {
         },
       );
     }
+  }
+
+  private isBaseBranchRetargetEdit(
+    action: string,
+    payload: Record<string, any>,
+  ): boolean {
+    return action === "edited" && payload.changes?.base != null;
   }
 }
