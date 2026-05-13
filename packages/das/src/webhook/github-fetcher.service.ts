@@ -29,6 +29,21 @@ const GRAPHQL_FILES_BATCH_SIZE = 50;
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+export function shouldBackfillPullRequestForSince(
+  pr: { state?: string; createdAt?: string; mergedAt?: string | null },
+  sinceDate: Date,
+): boolean {
+  const state = String(pr.state ?? "").toUpperCase();
+
+  if (state === "MERGED") {
+    if (!pr.mergedAt) return false;
+    return new Date(pr.mergedAt) >= sinceDate;
+  }
+
+  if (!pr.createdAt) return false;
+  return new Date(pr.createdAt) >= sinceDate;
+}
+
 @Injectable()
 export class GitHubFetcherService implements OnModuleInit {
   private readonly logger = new Logger(GitHubFetcherService.name);
@@ -772,13 +787,13 @@ export class GitHubFetcherService implements OnModuleInit {
         defaultBranchWritten = true;
       }
 
-      let shouldStop = false;
       for (const pr of page.nodes) {
-        // Ordered DESC by created_at — stop once we cross the cutoff
-        if (new Date(pr.createdAt) < sinceDate) {
-          shouldStop = true;
-          break;
-        }
+        // Keep backfill eligibility aligned with miner scoring semantics:
+        // - MERGED PRs are eligible by mergedAt
+        // - OPEN/CLOSED PRs are eligible by createdAt
+        // We intentionally do not stop paging based only on createdAt because
+        // that can skip older PRs merged within the scoring window.
+        if (!shouldBackfillPullRequestForSince(pr, sinceDate)) continue;
 
         await this.prRepo.upsert(
           {
@@ -843,7 +858,7 @@ export class GitHubFetcherService implements OnModuleInit {
         });
       }
 
-      if (shouldStop || !page.pageInfo.hasNextPage) break;
+      if (!page.pageInfo.hasNextPage) break;
       cursor = page.pageInfo.endCursor;
     }
 
