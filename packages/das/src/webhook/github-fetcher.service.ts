@@ -260,7 +260,7 @@ export class GitHubFetcherService implements OnModuleInit {
    * Fetch PR fields that require GraphQL — closing issue references,
    * body text, and the lastEditedAt timestamp (which is specific to body
    * edits, unlike REST's updated_at which changes on any interaction).
-   * Combined into one query to save a round trip.
+   * closingIssuesReferences is paginated to avoid truncating links.
    */
   async fetchPrMetadata(
     repoFullName: string,
@@ -274,45 +274,78 @@ export class GitHubFetcherService implements OnModuleInit {
     const token = await this.getTokenForRepo(repoFullName);
 
     const query = `
-      query($owner: String!, $repo: String!, $pr: Int!) {
+      query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
         repository(owner: $owner, name: $repo) {
           pullRequest(number: $pr) {
             bodyText
             lastEditedAt
-            closingIssuesReferences(first: 10) {
+            closingIssuesReferences(first: 100, after: $after) {
               nodes { number }
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
             }
           }
         }
       }
     `;
 
-    const res = await this.githubFetch("https://api.github.com/graphql", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        query,
-        variables: { owner, repo, pr: prNumber },
-      }),
-    });
+    let after: string | null = null;
+    let bodyText: string | null = null;
+    let lastEditedAt: string | null = null;
+    const closingIssueNumbers = new Set<number>();
 
-    if (!res.ok) {
-      throw new Error(
-        `GraphQL PR metadata fetch failed: ${res.status} ${await res.text()}`,
-      );
+    while (true) {
+      const res = await this.githubFetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          variables: { owner, repo, pr: prNumber, after },
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(
+          `GraphQL PR metadata fetch failed: ${res.status} ${await res.text()}`,
+        );
+      }
+
+      const body: any = await res.json();
+      const pr = body.data?.repository?.pullRequest;
+      if (!pr) {
+        return {
+          closingIssueNumbers: [],
+          body: null,
+          lastEditedAt: null,
+        };
+      }
+
+      if (bodyText == null) bodyText = pr.bodyText ?? null;
+      if (lastEditedAt == null) lastEditedAt = pr.lastEditedAt ?? null;
+
+      const refs = pr.closingIssuesReferences ?? {};
+      const nodes = refs.nodes ?? [];
+      for (const node of nodes) {
+        if (typeof node?.number === "number") {
+          closingIssueNumbers.add(node.number);
+        }
+      }
+
+      const hasNextPage = Boolean(refs.pageInfo?.hasNextPage);
+      const endCursor = refs.pageInfo?.endCursor ?? null;
+      if (!hasNextPage || !endCursor) break;
+      after = endCursor;
     }
 
-    const body: any = await res.json();
-    const pr = body.data?.repository?.pullRequest ?? {};
-    const nodes = pr.closingIssuesReferences?.nodes ?? [];
-
     return {
-      closingIssueNumbers: nodes.map((n: { number: number }) => n.number),
-      body: pr.bodyText ?? null,
-      lastEditedAt: pr.lastEditedAt ?? null,
+      closingIssueNumbers: [...closingIssueNumbers],
+      body: bodyText,
+      lastEditedAt,
     };
   }
 
