@@ -14,6 +14,7 @@ import { FETCH_QUEUE } from "../queue/constants";
 import { WebhookController } from "./webhook.controller";
 import { WebhookService } from "./webhook.service";
 import { WebhookPruneService } from "./webhook-prune.service";
+import { RepoIdentityService } from "./repo-identity.service";
 import { PullRequestHandler } from "./handlers/pull-request.handler";
 import { IssueHandler } from "./handlers/issue.handler";
 import { ReviewHandler } from "./handlers/review.handler";
@@ -39,6 +40,7 @@ import { InstallationHandler } from "./handlers/installation.handler";
   providers: [
     WebhookService,
     WebhookPruneService,
+    RepoIdentityService,
     PullRequestHandler,
     IssueHandler,
     ReviewHandler,

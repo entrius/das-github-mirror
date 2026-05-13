@@ -5,6 +5,9 @@ export class Repo {
   @PrimaryColumn({ name: "repo_full_name" })
   repoFullName: string;
 
+  @Column({ name: "github_repo_id", type: "bigint", nullable: true })
+  githubRepoId: string | null;
+
   @Column({ name: "installation_id", type: "bigint", nullable: true })
   installationId: string | null;
 
