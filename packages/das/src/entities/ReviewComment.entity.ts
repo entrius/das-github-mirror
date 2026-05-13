@@ -17,6 +17,9 @@ export class ReviewComment {
   @Column({ name: "reviewer_login", nullable: true })
   reviewerLogin: string;
 
+  @Column({ name: "reviewer_association", nullable: true })
+  reviewerAssociation: string | null;
+
   @Column({ name: "review_id", type: "bigint", nullable: true })
   reviewId: string | null;
 

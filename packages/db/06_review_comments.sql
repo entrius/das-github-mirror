@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS review_comments (
     pr_number           INTEGER         NOT NULL,
     reviewer_github_id  VARCHAR(255),
     reviewer_login      VARCHAR(255),
+    reviewer_association VARCHAR(20),
     review_id           BIGINT,
     path                VARCHAR(1024),
     line                INTEGER,
@@ -18,6 +19,8 @@ CREATE TABLE IF NOT EXISTS review_comments (
 
     PRIMARY KEY (repo_full_name, comment_id)
 );
+
+ALTER TABLE review_comments ADD COLUMN IF NOT EXISTS reviewer_association VARCHAR(20);
 
 CREATE INDEX IF NOT EXISTS idx_review_comments_pr       ON review_comments(repo_full_name, pr_number);
 CREATE INDEX IF NOT EXISTS idx_review_comments_reviewer ON review_comments(reviewer_github_id);

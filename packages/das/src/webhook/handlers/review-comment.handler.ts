@@ -29,6 +29,7 @@ export class ReviewCommentHandler {
       prNumber: payload.pull_request.number,
       reviewerGithubId: String(comment.user.id),
       reviewerLogin: comment.user.login,
+      reviewerAssociation: comment.author_association ?? null,
       reviewId: comment.pull_request_review_id
         ? String(comment.pull_request_review_id)
         : null,
