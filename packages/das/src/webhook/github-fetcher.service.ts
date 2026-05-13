@@ -274,46 +274,70 @@ export class GitHubFetcherService implements OnModuleInit {
     const token = await this.getTokenForRepo(repoFullName);
 
     const query = `
-      query($owner: String!, $repo: String!, $pr: Int!) {
+      query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
         repository(owner: $owner, name: $repo) {
           pullRequest(number: $pr) {
             bodyText
             lastEditedAt
-            closingIssuesReferences(first: 10) {
+            closingIssuesReferences(first: 100, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
               nodes { number }
             }
           }
         }
       }
     `;
+    const closingIssueNumbers: number[] = [];
+    let bodyText: string | null = null;
+    let lastEditedAt: string | null = null;
+    let cursor: string | null = null;
 
-    const res = await this.githubFetch("https://api.github.com/graphql", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        query,
-        variables: { owner, repo, pr: prNumber },
-      }),
-    });
+    while (true) {
+      const res = await this.githubFetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          variables: { owner, repo, pr: prNumber, cursor },
+        }),
+      });
 
-    if (!res.ok) {
-      throw new Error(
-        `GraphQL PR metadata fetch failed: ${res.status} ${await res.text()}`,
+      if (!res.ok) {
+        throw new Error(
+          `GraphQL PR metadata fetch failed: ${res.status} ${await res.text()}`,
+        );
+      }
+
+      const responseBody: any = await res.json();
+      const prData = responseBody.data?.repository?.pullRequest;
+      if (!prData) {
+        throw new Error(
+          `GraphQL PR metadata fetch returned empty pullRequest for ${repoFullName}#${prNumber}`,
+        );
+      }
+
+      if (bodyText === null) {
+        bodyText = prData.bodyText ?? null;
+      }
+      if (lastEditedAt === null) {
+        lastEditedAt = prData.lastEditedAt ?? null;
+      }
+
+      const refs = prData.closingIssuesReferences;
+      const nodes = refs?.nodes ?? [];
+      closingIssueNumbers.push(
+        ...nodes.map((n: { number: number }) => n.number),
       );
+
+      if (!refs?.pageInfo?.hasNextPage) break;
+      cursor = refs.pageInfo.endCursor ?? null;
+      if (!cursor) break;
     }
 
-    const body: any = await res.json();
-    const pr = body.data?.repository?.pullRequest ?? {};
-    const nodes = pr.closingIssuesReferences?.nodes ?? [];
-
-    return {
-      closingIssueNumbers: nodes.map((n: { number: number }) => n.number),
-      body: pr.bodyText ?? null,
-      lastEditedAt: pr.lastEditedAt ?? null,
-    };
+    return { closingIssueNumbers, body: bodyText, lastEditedAt };
   }
 
   // --- PR files + contents (REST for list, batched GraphQL for contents) ---
