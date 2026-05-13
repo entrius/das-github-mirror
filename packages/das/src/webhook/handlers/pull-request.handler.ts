@@ -68,12 +68,13 @@ export class PullRequestHandler {
     ];
     if (metadataActions.includes(action)) {
       const jobId = `meta-${repoFullName}-${prNumber}`;
+      await this.removeRetainedFailedMetadataJob(jobId);
       await this.fetchQueue.add(
         FETCH_JOBS.PR_METADATA,
         { repoFullName, prNumber },
         {
           jobId,
-          // Replace any pending job for the same PR (e.g. rapid pushes)
+          // Deduplicate pending/active jobs for the same PR.
           removeOnComplete: true,
           removeOnFail: 50,
           attempts: 3,
@@ -116,5 +117,18 @@ export class PullRequestHandler {
         },
       );
     }
+  }
+
+  private async removeRetainedFailedMetadataJob(jobId: string): Promise<void> {
+    const existingJob = await this.fetchQueue.getJob(jobId);
+    if (!existingJob) return;
+
+    const state = await existingJob.getState();
+    if (state !== "failed") return;
+
+    await existingJob.remove();
+    this.logger.warn(
+      `Removed retained failed PR metadata job ${jobId} before requeueing`,
+    );
   }
 }
