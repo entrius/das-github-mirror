@@ -123,10 +123,12 @@ export class AdminController {
   }> {
     const repoFullName = validateRepoFullName(body?.repoFullName);
 
-    const result = await this.repoRepo.update(
-      { repoFullName },
-      { registered: true },
-    );
+    const result = await this.repoRepo
+      .createQueryBuilder()
+      .update()
+      .set({ registered: true })
+      .where("LOWER(repo_full_name) = LOWER(:repoFullName)", { repoFullName })
+      .execute();
 
     if (!result.affected) {
       throw new NotFoundException(
