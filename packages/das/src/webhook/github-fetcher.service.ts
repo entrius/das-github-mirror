@@ -784,7 +784,10 @@ export class GitHubFetcherService implements OnModuleInit {
           {
             repoFullName,
             prNumber: pr.number,
-            authorGithubId: String(pr.author?.databaseId ?? ""),
+            authorGithubId:
+              pr.author?.databaseId != null
+                ? String(pr.author.databaseId)
+                : null,
             authorLogin: pr.author?.login ?? null,
             authorAssociation: pr.authorAssociation ?? null,
             title: pr.title,
