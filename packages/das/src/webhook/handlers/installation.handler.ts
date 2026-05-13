@@ -1,17 +1,12 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-explicit-any */
 import { Injectable, Logger } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
-import { Repo } from "../../entities";
+import { RepoIdentityService } from "../repo-identity.service";
 
 @Injectable()
 export class InstallationHandler {
   private readonly logger = new Logger(InstallationHandler.name);
 
-  constructor(
-    @InjectRepository(Repo)
-    private readonly repoRepo: Repository<Repo>,
-  ) {}
+  constructor(private readonly repoIdentity: RepoIdentityService) {}
 
   async handle(event: string, payload: Record<string, any>): Promise<void> {
     const installationId = payload.installation?.id;
@@ -22,12 +17,7 @@ export class InstallationHandler {
       this.logger.warn(
         `Installation ${installationId} deleted, clearing repos`,
       );
-      await this.repoRepo
-        .createQueryBuilder()
-        .update()
-        .set({ installationId: null, registered: false })
-        .where("installationId = :id", { id: String(installationId) })
-        .execute();
+      await this.repoIdentity.clearInstallation(String(installationId));
       return;
     }
 
@@ -38,33 +28,19 @@ export class InstallationHandler {
       payload.repositories ?? payload.repositories_added ?? [];
 
     for (const repo of repos) {
-      // Check existence first so we only set added_at on insert, not on every
-      // re-fire of installation.created / installation_repositories.added.
-      const existing = await this.repoRepo.findOneBy({
-        repoFullName: repo.full_name,
-      });
-      if (existing) {
-        await this.repoRepo.update(repo.full_name, {
-          installationId: String(installationId),
-        });
-      } else {
-        await this.repoRepo.insert({
-          repoFullName: repo.full_name,
-          installationId: String(installationId),
-          addedAt: new Date().toISOString(),
-        });
-      }
-      this.logger.log(`Tracking repo: ${repo.full_name}`);
+      const repoFullName = await this.repoIdentity.upsertInstalled(
+        repo,
+        String(installationId),
+      );
+      if (repoFullName) this.logger.log(`Tracking repo: ${repoFullName}`);
     }
 
     // installation_repositories.removed — soft clear, preserve historical data.
     const removed: any[] = payload.repositories_removed ?? [];
     for (const repo of removed) {
-      await this.repoRepo.update(repo.full_name, {
-        installationId: null,
-        registered: false,
-      });
-      this.logger.log(`Stopped tracking repo: ${repo.full_name}`);
+      const repoFullName = await this.repoIdentity.markRemoved(repo);
+      if (repoFullName)
+        this.logger.log(`Stopped tracking repo: ${repoFullName}`);
     }
   }
 }

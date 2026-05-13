@@ -1,8 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-explicit-any */
 import { Injectable, Logger } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, Repository } from "typeorm";
-import { Repo } from "../entities";
+import { DataSource } from "typeorm";
 import { PullRequestHandler } from "./handlers/pull-request.handler";
 import { IssueHandler } from "./handlers/issue.handler";
 import { ReviewHandler } from "./handlers/review.handler";
@@ -10,15 +8,15 @@ import { CommentHandler } from "./handlers/comment.handler";
 import { ReviewCommentHandler } from "./handlers/review-comment.handler";
 import { LabelHandler } from "./handlers/label.handler";
 import { InstallationHandler } from "./handlers/installation.handler";
+import { RepoIdentityService } from "./repo-identity.service";
 
 @Injectable()
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
 
   constructor(
-    @InjectRepository(Repo)
-    private readonly repoRepo: Repository<Repo>,
     private readonly dataSource: DataSource,
+    private readonly repoIdentity: RepoIdentityService,
     private readonly pullRequestHandler: PullRequestHandler,
     private readonly issueHandler: IssueHandler,
     private readonly reviewHandler: ReviewHandler,
@@ -81,7 +79,7 @@ export class WebhookService {
 
     // All other events carry repo context and only persist data for registered repos.
     if (repoFullName) {
-      const repo = await this.repoRepo.findOneBy({ repoFullName });
+      const repo = await this.repoIdentity.reconcile(payload.repository);
       if (!repo?.registered) {
         this.logger.log(
           `Skipping ${event}: repo ${repoFullName} not registered`,
