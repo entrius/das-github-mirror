@@ -477,15 +477,19 @@ export class GitHubFetcherService implements OnModuleInit {
     headSha: string,
     baseSha: string | null,
   ): Promise<void> {
-    // Only fetch contents for files that have a meaningful version to fetch
-    const scored = files.filter((f) => f.status !== "removed");
-    if (scored.length === 0) return;
+    // Added files have only a head blob; removed files have only a base blob.
+    // Keep removed files when a base SHA is available so deletion scoring has
+    // the content that existed before the PR.
+    const contentFiles = files.filter(
+      (f) => f.status !== "removed" || baseSha !== null,
+    );
+    if (contentFiles.length === 0) return;
 
     let batchSize = GRAPHQL_FILES_BATCH_SIZE;
     const minBatchSize = 5;
 
-    for (let i = 0; i < scored.length; ) {
-      const batch = scored.slice(i, i + batchSize);
+    for (let i = 0; i < contentFiles.length; ) {
+      const batch = contentFiles.slice(i, i + batchSize);
       try {
         await this.fetchContentBatch(
           repoFullName,
@@ -537,11 +541,14 @@ export class GitHubFetcherService implements OnModuleInit {
           `base${i}: object(expression: "${baseExpr}") { ... on Blob { text byteSize isBinary } }`,
         );
       }
-      // Head version (already filtered out removed files at caller)
-      const headExpr = this.escapeGraphql(`${headSha}:${file.filename}`);
-      fields.push(
-        `head${i}: object(expression: "${headExpr}") { ... on Blob { text byteSize isBinary } }`,
-      );
+      // Removed files do not exist at head; store a null headContent while
+      // still fetching the base blob above.
+      if (file.status !== "removed") {
+        const headExpr = this.escapeGraphql(`${headSha}:${file.filename}`);
+        fields.push(
+          `head${i}: object(expression: "${headExpr}") { ... on Blob { text byteSize isBinary } }`,
+        );
+      }
     }
 
     const query = `
@@ -636,7 +643,9 @@ export class GitHubFetcherService implements OnModuleInit {
   async backfillPullRequests(
     repoFullName: string,
     sinceDate: Date,
-  ): Promise<{ prNumber: number }[]> {
+  ): Promise<
+    { prNumber: number; headSha: string | null; baseSha: string | null }[]
+  > {
     const [owner, repo] = repoFullName.split("/");
     const token = await this.getTokenForRepo(repoFullName);
 
@@ -718,7 +727,11 @@ export class GitHubFetcherService implements OnModuleInit {
       }
     `;
 
-    const prs: { prNumber: number }[] = [];
+    const prs: {
+      prNumber: number;
+      headSha: string | null;
+      baseSha: string | null;
+    }[] = [];
     let cursor: string | null = null;
     let defaultBranchWritten = false;
 
@@ -823,7 +836,11 @@ export class GitHubFetcherService implements OnModuleInit {
           pr.timelineItems?.nodes ?? [],
         );
 
-        prs.push({ prNumber: pr.number });
+        prs.push({
+          prNumber: pr.number,
+          headSha: pr.headRefOid ?? null,
+          baseSha: pr.baseRefOid ?? null,
+        });
       }
 
       if (shouldStop || !page.pageInfo.hasNextPage) break;
@@ -931,26 +948,29 @@ export class GitHubFetcherService implements OnModuleInit {
           break;
         }
 
-        await this.issueRepo.upsert(
-          {
-            repoFullName,
-            issueNumber: issue.number,
-            authorGithubId: String(issue.author?.databaseId ?? ""),
-            authorLogin: issue.author?.login ?? null,
-            authorAssociation: issue.authorAssociation ?? null,
-            title: issue.title,
-            state: issue.state, // OPEN / CLOSED
-            stateReason: issue.stateReason ?? null,
-            createdAt: issue.createdAt,
-            closedAt: issue.closedAt ?? null,
-            updatedAt: issue.updatedAt ?? null,
-            lastEditedAt: issue.lastEditedAt ?? null,
-            labels: (issue.labels?.nodes ?? []).map(
-              (l: { name: string }) => l.name,
-            ),
-          },
-          ["repoFullName", "issueNumber"],
-        );
+        const issueData: Partial<Issue> = {
+          repoFullName,
+          issueNumber: issue.number,
+          authorGithubId: String(issue.author?.databaseId ?? ""),
+          authorLogin: issue.author?.login ?? null,
+          authorAssociation: issue.authorAssociation ?? null,
+          title: issue.title,
+          state: issue.state, // OPEN / CLOSED
+          stateReason: issue.stateReason ?? null,
+          createdAt: issue.createdAt,
+          closedAt: issue.closedAt ?? null,
+          updatedAt: issue.updatedAt ?? null,
+          lastEditedAt: issue.lastEditedAt ?? null,
+          labels: (issue.labels?.nodes ?? []).map(
+            (l: { name: string }) => l.name,
+          ),
+        };
+
+        if (issue.state === "OPEN") {
+          issueData.solvedByPr = null;
+        }
+
+        await this.issueRepo.upsert(issueData, ["repoFullName", "issueNumber"]);
 
         // Upsert label events for this issue
         await this.saveLabelTimelineEvents(
@@ -971,8 +991,8 @@ export class GitHubFetcherService implements OnModuleInit {
    * Idempotent: relies on the uq_label_events_natural_key UNIQUE index so
    * re-running backfill (or BullMQ retries) collapses to a no-op for events
    * already written. Actor role is resolved at read time via
-   * contributor_repo_roles — GraphQL's actor type doesn't expose
-   * authorAssociation.
+   * contributor_repo_roles using stored PR/issue, review, and comment
+   * association evidence; GraphQL's actor type doesn't expose authorAssociation.
    */
   private async saveLabelTimelineEvents(
     repoFullName: string,
