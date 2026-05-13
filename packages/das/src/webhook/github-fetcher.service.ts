@@ -684,43 +684,6 @@ export class GitHubFetcherService implements OnModuleInit {
               additions
               deletions
               commits { totalCount }
-              labels(first: 10) { nodes { name } }
-              reviews(first: 10) {
-                nodes {
-                  submittedAt
-                  state
-                  authorAssociation
-                  author {
-                    login
-                    ... on User { databaseId }
-                    ... on Bot { databaseId }
-                  }
-                }
-              }
-              timelineItems(
-                itemTypes: [LABELED_EVENT, UNLABELED_EVENT]
-                first: 30
-              ) {
-                nodes {
-                  __typename
-                  ... on LabeledEvent {
-                    createdAt
-                    label { name }
-                    actor {
-                      login
-                      ... on User { databaseId }
-                    }
-                  }
-                  ... on UnlabeledEvent {
-                    createdAt
-                    label { name }
-                    actor {
-                      login
-                      ... on User { databaseId }
-                    }
-                  }
-                }
-              }
             }
           }
         }
@@ -780,6 +743,22 @@ export class GitHubFetcherService implements OnModuleInit {
           break;
         }
 
+        const labels = await this.fetchAllPullRequestLabels(
+          repoFullName,
+          pr.number,
+          token,
+        );
+        const reviews = await this.fetchAllPullRequestReviews(
+          repoFullName,
+          pr.number,
+          token,
+        );
+        const timelineEvents = await this.fetchAllPullRequestLabelEvents(
+          repoFullName,
+          pr.number,
+          token,
+        );
+
         await this.prRepo.upsert(
           {
             repoFullName,
@@ -803,16 +782,13 @@ export class GitHubFetcherService implements OnModuleInit {
             additions: pr.additions ?? null,
             deletions: pr.deletions ?? null,
             commitsCount: pr.commits?.totalCount ?? null,
-            labels: (pr.labels?.nodes ?? []).map(
-              (l: { name: string }) => l.name,
-            ),
+            labels,
           },
           ["repoFullName", "prNumber"],
         );
 
-        // Upsert reviews captured in the same query
-        const reviewNodes = pr.reviews?.nodes ?? [];
-        for (const review of reviewNodes) {
+        // Upsert all reviews for this PR (fully paginated)
+        for (const review of reviews) {
           if (!review?.submittedAt || !review?.author?.databaseId) continue;
           await this.reviewRepo.upsert(
             {
@@ -833,7 +809,7 @@ export class GitHubFetcherService implements OnModuleInit {
           repoFullName,
           pr.number,
           "pr",
-          pr.timelineItems?.nodes ?? [],
+          timelineEvents,
         );
 
         prs.push({
@@ -882,31 +858,6 @@ export class GitHubFetcherService implements OnModuleInit {
                 ... on Bot { databaseId }
               }
               authorAssociation
-              labels(first: 10) { nodes { name } }
-              timelineItems(
-                itemTypes: [LABELED_EVENT, UNLABELED_EVENT]
-                first: 30
-              ) {
-                nodes {
-                  __typename
-                  ... on LabeledEvent {
-                    createdAt
-                    label { name }
-                    actor {
-                      login
-                      ... on User { databaseId }
-                    }
-                  }
-                  ... on UnlabeledEvent {
-                    createdAt
-                    label { name }
-                    actor {
-                      login
-                      ... on User { databaseId }
-                    }
-                  }
-                }
-              }
             }
           }
         }
@@ -948,6 +899,17 @@ export class GitHubFetcherService implements OnModuleInit {
           break;
         }
 
+        const labels = await this.fetchAllIssueLabels(
+          repoFullName,
+          issue.number,
+          token,
+        );
+        const timelineEvents = await this.fetchAllIssueLabelEvents(
+          repoFullName,
+          issue.number,
+          token,
+        );
+
         const issueData: Partial<Issue> = {
           repoFullName,
           issueNumber: issue.number,
@@ -961,9 +923,7 @@ export class GitHubFetcherService implements OnModuleInit {
           closedAt: issue.closedAt ?? null,
           updatedAt: issue.updatedAt ?? null,
           lastEditedAt: issue.lastEditedAt ?? null,
-          labels: (issue.labels?.nodes ?? []).map(
-            (l: { name: string }) => l.name,
-          ),
+          labels,
         };
 
         if (issue.state === "OPEN") {
@@ -977,7 +937,7 @@ export class GitHubFetcherService implements OnModuleInit {
           repoFullName,
           issue.number,
           "issue",
-          issue.timelineItems?.nodes ?? [],
+          timelineEvents,
         );
       }
 
@@ -1016,5 +976,327 @@ export class GitHubFetcherService implements OnModuleInit {
         timestamp: node.createdAt,
       });
     }
+  }
+
+  private async fetchAllPullRequestLabels(
+    repoFullName: string,
+    prNumber: number,
+    token: string,
+  ): Promise<string[]> {
+    const [owner, repo] = repoFullName.split("/");
+    const labels: string[] = [];
+    let cursor: string | null = null;
+
+    const query = `
+      query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $pr) {
+            labels(first: 100, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes { name }
+            }
+          }
+        }
+      }
+    `;
+
+    while (true) {
+      const res = await this.githubFetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          variables: { owner, repo, pr: prNumber, cursor },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(
+          `PR labels pagination failed: ${res.status} ${await res.text()}`,
+        );
+      }
+
+      const body: any = await res.json();
+      const page = body.data?.repository?.pullRequest?.labels;
+      if (!page) break;
+
+      for (const node of page.nodes ?? []) {
+        if (node?.name) labels.push(node.name);
+      }
+
+      if (!page.pageInfo?.hasNextPage) break;
+      cursor = page.pageInfo.endCursor ?? null;
+    }
+
+    return labels;
+  }
+
+  private async fetchAllPullRequestReviews(
+    repoFullName: string,
+    prNumber: number,
+    token: string,
+  ): Promise<any[]> {
+    const [owner, repo] = repoFullName.split("/");
+    const reviews: any[] = [];
+    let cursor: string | null = null;
+
+    const query = `
+      query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $pr) {
+            reviews(first: 100, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                submittedAt
+                state
+                authorAssociation
+                author {
+                  login
+                  ... on User { databaseId }
+                  ... on Bot { databaseId }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    while (true) {
+      const res = await this.githubFetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          variables: { owner, repo, pr: prNumber, cursor },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(
+          `PR reviews pagination failed: ${res.status} ${await res.text()}`,
+        );
+      }
+
+      const body: any = await res.json();
+      const page = body.data?.repository?.pullRequest?.reviews;
+      if (!page) break;
+
+      reviews.push(...(page.nodes ?? []));
+
+      if (!page.pageInfo?.hasNextPage) break;
+      cursor = page.pageInfo.endCursor ?? null;
+    }
+
+    return reviews;
+  }
+
+  private async fetchAllPullRequestLabelEvents(
+    repoFullName: string,
+    prNumber: number,
+    token: string,
+  ): Promise<any[]> {
+    const [owner, repo] = repoFullName.split("/");
+    const events: any[] = [];
+    let cursor: string | null = null;
+
+    const query = `
+      query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $pr) {
+            timelineItems(
+              itemTypes: [LABELED_EVENT, UNLABELED_EVENT]
+              first: 100
+              after: $cursor
+            ) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                __typename
+                ... on LabeledEvent {
+                  createdAt
+                  label { name }
+                  actor {
+                    login
+                    ... on User { databaseId }
+                  }
+                }
+                ... on UnlabeledEvent {
+                  createdAt
+                  label { name }
+                  actor {
+                    login
+                    ... on User { databaseId }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    while (true) {
+      const res = await this.githubFetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          variables: { owner, repo, pr: prNumber, cursor },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(
+          `PR timeline pagination failed: ${res.status} ${await res.text()}`,
+        );
+      }
+
+      const body: any = await res.json();
+      const page = body.data?.repository?.pullRequest?.timelineItems;
+      if (!page) break;
+
+      events.push(...(page.nodes ?? []));
+
+      if (!page.pageInfo?.hasNextPage) break;
+      cursor = page.pageInfo.endCursor ?? null;
+    }
+
+    return events;
+  }
+
+  private async fetchAllIssueLabels(
+    repoFullName: string,
+    issueNumber: number,
+    token: string,
+  ): Promise<string[]> {
+    const [owner, repo] = repoFullName.split("/");
+    const labels: string[] = [];
+    let cursor: string | null = null;
+
+    const query = `
+      query($owner: String!, $repo: String!, $issue: Int!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          issue(number: $issue) {
+            labels(first: 100, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes { name }
+            }
+          }
+        }
+      }
+    `;
+
+    while (true) {
+      const res = await this.githubFetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          variables: { owner, repo, issue: issueNumber, cursor },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(
+          `Issue labels pagination failed: ${res.status} ${await res.text()}`,
+        );
+      }
+
+      const body: any = await res.json();
+      const page = body.data?.repository?.issue?.labels;
+      if (!page) break;
+
+      for (const node of page.nodes ?? []) {
+        if (node?.name) labels.push(node.name);
+      }
+
+      if (!page.pageInfo?.hasNextPage) break;
+      cursor = page.pageInfo.endCursor ?? null;
+    }
+
+    return labels;
+  }
+
+  private async fetchAllIssueLabelEvents(
+    repoFullName: string,
+    issueNumber: number,
+    token: string,
+  ): Promise<any[]> {
+    const [owner, repo] = repoFullName.split("/");
+    const events: any[] = [];
+    let cursor: string | null = null;
+
+    const query = `
+      query($owner: String!, $repo: String!, $issue: Int!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          issue(number: $issue) {
+            timelineItems(
+              itemTypes: [LABELED_EVENT, UNLABELED_EVENT]
+              first: 100
+              after: $cursor
+            ) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                __typename
+                ... on LabeledEvent {
+                  createdAt
+                  label { name }
+                  actor {
+                    login
+                    ... on User { databaseId }
+                  }
+                }
+                ... on UnlabeledEvent {
+                  createdAt
+                  label { name }
+                  actor {
+                    login
+                    ... on User { databaseId }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    while (true) {
+      const res = await this.githubFetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          variables: { owner, repo, issue: issueNumber, cursor },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(
+          `Issue timeline pagination failed: ${res.status} ${await res.text()}`,
+        );
+      }
+
+      const body: any = await res.json();
+      const page = body.data?.repository?.issue?.timelineItems;
+      if (!page) break;
+
+      events.push(...(page.nodes ?? []));
+
+      if (!page.pageInfo?.hasNextPage) break;
+      cursor = page.pageInfo.endCursor ?? null;
+    }
+
+    return events;
   }
 }
