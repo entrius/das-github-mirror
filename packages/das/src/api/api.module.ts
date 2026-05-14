@@ -39,6 +39,11 @@ import { PullsService } from "./pulls/pulls.service";
     AdminController,
     HealthController,
   ],
-  providers: [DashboardService, MinersService, PullsService, RequireApiKeyGuard],
+  providers: [
+    DashboardService,
+    MinersService,
+    PullsService,
+    RequireApiKeyGuard,
+  ],
 })
 export class ApiModule {}
