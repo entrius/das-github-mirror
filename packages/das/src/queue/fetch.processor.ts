@@ -139,6 +139,10 @@ export class FetchProcessor extends WorkerHost {
     );
     this.logger.log(`Backfilled ${prs.length} PRs from ${repoFullName}`);
 
+    // Fetch and upsert issues before PR metadata jobs can link solved_by_pr.
+    await this.fetcher.backfillIssues(repoFullName, sinceDate);
+    this.logger.log(`Backfilled issues from ${repoFullName}`);
+
     // Enqueue follow-up jobs (metadata + files for every PR).
     for (const { prNumber, headSha, baseSha } of prs) {
       await this.fetchQueue.add(
@@ -160,10 +164,6 @@ export class FetchProcessor extends WorkerHost {
         baseSha ?? null,
       );
     }
-
-    // Fetch and upsert issues
-    await this.fetcher.backfillIssues(repoFullName, sinceDate);
-    this.logger.log(`Backfilled issues from ${repoFullName}`);
   }
 
   private async handleStalePrFilesJob(
