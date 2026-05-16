@@ -19,6 +19,8 @@ import { MinersController } from "./miners/miners.controller";
 import { MinersService } from "./miners/miners.service";
 import { PullsController } from "./pulls/pulls.controller";
 import { PullsService } from "./pulls/pulls.service";
+import { ReposController } from "./repos/repos.controller";
+import { ReposService } from "./repos/repos.service";
 
 @Module({
   imports: [
@@ -36,6 +38,7 @@ import { PullsService } from "./pulls/pulls.service";
     DashboardController,
     MinersController,
     PullsController,
+    ReposController,
     AdminController,
     HealthController,
   ],
@@ -43,6 +46,7 @@ import { PullsService } from "./pulls/pulls.service";
     DashboardService,
     MinersService,
     PullsService,
+    ReposService,
     RequireApiKeyGuard,
   ],
 })
