@@ -195,7 +195,12 @@ export class GitHubFetcherService implements OnModuleInit {
   }
 
   private async getTokenForRepo(repoFullName: string): Promise<string> {
-    const repo = await this.repoRepo.findOneBy({ repoFullName });
+    const repo = await this.repoRepo
+      .createQueryBuilder("repo")
+      .where("LOWER(repo.repo_full_name) = LOWER(:repoFullName)", {
+        repoFullName,
+      })
+      .getOne();
     if (!repo?.installationId) {
       throw new Error(`No installation for repo ${repoFullName}`);
     }
