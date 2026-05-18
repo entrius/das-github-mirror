@@ -53,9 +53,15 @@ export class PullRequestHandler {
 
     await this.prRepo.upsert(data, ["repoFullName", "prNumber"]);
 
-    await this.repoRepo.update(repoFullName, {
+    const repoUpdate: Partial<Repo> = {
       lastEventAt: new Date().toISOString(),
-    });
+    };
+    const defaultBranch: string | null =
+      payload.repository?.default_branch ?? null;
+    if (defaultBranch) {
+      repoUpdate.defaultBranch = defaultBranch;
+    }
+    await this.repoRepo.update(repoFullName, repoUpdate);
 
     // Enqueue metadata fetch (closing issues + body + lastEditedAt) on relevant actions.
     // Also run on `edited` so post-merge body edits are captured.
