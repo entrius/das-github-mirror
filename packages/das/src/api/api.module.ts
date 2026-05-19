@@ -21,6 +21,8 @@ import { PullsController } from "./pulls/pulls.controller";
 import { PullsService } from "./pulls/pulls.service";
 import { ReposController } from "./repos/repos.controller";
 import { ReposService } from "./repos/repos.service";
+import { CommentsController } from "./comments/comments.controller";
+import { CommentsService } from "./comments/comments.service";
 
 @Module({
   imports: [
@@ -39,6 +41,7 @@ import { ReposService } from "./repos/repos.service";
     MinersController,
     PullsController,
     ReposController,
+    CommentsController,
     AdminController,
     HealthController,
   ],
@@ -47,6 +50,7 @@ import { ReposService } from "./repos/repos.service";
     MinersService,
     PullsService,
     ReposService,
+    CommentsService,
     RequireApiKeyGuard,
   ],
 })
