@@ -26,7 +26,7 @@ export class InstallationHandler {
         .createQueryBuilder()
         .update()
         .set({ installationId: null, registered: false })
-        .where("installationId = :id", { id: String(installationId) })
+        .where("installation_id = :id", { id: String(installationId) })
         .execute();
       return;
     }
