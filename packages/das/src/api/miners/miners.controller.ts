@@ -23,13 +23,27 @@ export class MinersController {
     description:
       "ISO timestamp. Defaults to 35 days ago (midnight UTC) if omitted.",
   })
+  @ApiQuery({
+    name: "cursor",
+    required: false,
+    description: "Opaque pagination cursor.",
+  })
+  @ApiQuery({
+    name: "limit",
+    required: false,
+    description: "Max results (default 50, max 200).",
+  })
   async getPullRequests(
     @Param("githubId") githubId: string,
     @Query("since") since?: string,
+    @Query("cursor") cursor?: string,
+    @Query("limit") limit?: string,
   ): Promise<unknown> {
     return this.miners.getPullRequests(
       githubId,
       MinersService.resolveSince(since),
+      cursor,
+      limit ? parseInt(limit, 10) : undefined,
     );
   }
 
@@ -52,10 +66,27 @@ export class MinersController {
       "ISO timestamp. When omitted, the response contains all currently-" +
       "OPEN issues with no time bound and no CLOSED history.",
   })
+  @ApiQuery({
+    name: "cursor",
+    required: false,
+    description: "Opaque pagination cursor.",
+  })
+  @ApiQuery({
+    name: "limit",
+    required: false,
+    description: "Max results (default 50, max 200).",
+  })
   async getIssues(
     @Param("githubId") githubId: string,
     @Query("since") since?: string,
+    @Query("cursor") cursor?: string,
+    @Query("limit") limit?: string,
   ): Promise<unknown> {
-    return this.miners.getIssues(githubId, since ?? null);
+    return this.miners.getIssues(
+      githubId,
+      since ?? null,
+      cursor,
+      limit ? parseInt(limit, 10) : undefined,
+    );
   }
 }

@@ -3,21 +3,104 @@ import { Injectable } from "@nestjs/common";
 import { DataSource } from "typeorm";
 
 const DEFAULT_SINCE_DAYS = 35;
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 200;
+
+interface PullRequestCursor {
+  created_at: string;
+  repo_full_name: string;
+  pr_number: number;
+}
+
+interface IssueCursor {
+  created_at: string;
+  repo_full_name: string;
+  issue_number: number;
+}
 
 @Injectable()
 export class MinersService {
   constructor(private readonly dataSource: DataSource) {}
 
+  private encodeCursor(cursor: PullRequestCursor | IssueCursor): string {
+    return Buffer.from(JSON.stringify(cursor)).toString("base64");
+  }
+
+  private decodePullRequestCursor(cursor: string): PullRequestCursor | null {
+    try {
+      const decoded = JSON.parse(
+        Buffer.from(cursor, "base64").toString("utf-8"),
+      );
+      if (
+        decoded.created_at &&
+        decoded.repo_full_name &&
+        typeof decoded.pr_number === "number"
+      ) {
+        return decoded as PullRequestCursor;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private decodeIssueCursor(cursor: string): IssueCursor | null {
+    try {
+      const decoded = JSON.parse(
+        Buffer.from(cursor, "base64").toString("utf-8"),
+      );
+      if (
+        decoded.created_at &&
+        decoded.repo_full_name &&
+        typeof decoded.issue_number === "number"
+      ) {
+        return decoded as IssueCursor;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   async getPullRequests(
     githubId: string,
     since: string,
+    cursor?: string,
+    limit?: number,
   ): Promise<{
     github_id: string;
     since: string;
     generated_at: string;
     pull_requests: unknown[];
+    next_cursor: string | null;
   }> {
-    const rows = await this.dataSource.query(
+    const effectiveLimit = Math.min(limit ?? DEFAULT_LIMIT, MAX_LIMIT);
+    const decodedCursor = cursor ? this.decodePullRequestCursor(cursor) : null;
+
+    const params: (string | number)[] = [githubId, since];
+    let keysetClause = "";
+
+    if (decodedCursor) {
+      keysetClause = `
+        AND (
+          p.created_at < $3
+          OR (p.created_at = $3 AND p.repo_full_name < $4)
+          OR (p.created_at = $3 AND p.repo_full_name = $4 AND p.pr_number < $5)
+        )
+      `;
+      params.push(
+        decodedCursor.created_at,
+        decodedCursor.repo_full_name,
+        decodedCursor.pr_number,
+      );
+    }
+
+    const rows: Array<{
+      repo_full_name: string;
+      pr_number: number;
+      created_at: string;
+      [key: string]: unknown;
+    }> = await this.dataSource.query(
       `
       SELECT
         LOWER(p.repo_full_name)         AS repo_full_name,
@@ -109,29 +192,72 @@ export class MinersService {
           OR (p.state = 'MERGED' AND p.merged_at >= $2)
           OR (p.state = 'CLOSED' AND p.created_at >= $2)
         )
-      ORDER BY p.created_at DESC
+        ${keysetClause}
+      ORDER BY p.created_at DESC, p.repo_full_name DESC, p.pr_number DESC
+      LIMIT ${effectiveLimit + 1}
       `,
-      [githubId, since],
+      params,
     );
+
+    const hasMore = rows.length > effectiveLimit;
+    const results = hasMore ? rows.slice(0, effectiveLimit) : rows;
+    const nextCursor =
+      hasMore && results.length > 0
+        ? this.encodeCursor({
+            created_at: results[results.length - 1].created_at,
+            repo_full_name: results[results.length - 1].repo_full_name,
+            pr_number: results[results.length - 1].pr_number,
+          })
+        : null;
 
     return {
       github_id: githubId,
       since,
       generated_at: new Date().toISOString(),
-      pull_requests: rows,
+      pull_requests: results,
+      next_cursor: nextCursor,
     };
   }
 
   async getIssues(
     githubId: string,
     since: string | null,
+    cursor?: string,
+    limit?: number,
   ): Promise<{
     github_id: string;
     since: string | null;
     generated_at: string;
     issues: unknown[];
+    next_cursor: string | null;
   }> {
-    const rows = await this.dataSource.query(
+    const effectiveLimit = Math.min(limit ?? DEFAULT_LIMIT, MAX_LIMIT);
+    const decodedCursor = cursor ? this.decodeIssueCursor(cursor) : null;
+
+    const params: (string | number | null)[] = [githubId, since];
+    let keysetClause = "";
+
+    if (decodedCursor) {
+      keysetClause = `
+        AND (
+          i.created_at < $3
+          OR (i.created_at = $3 AND i.repo_full_name < $4)
+          OR (i.created_at = $3 AND i.repo_full_name = $4 AND i.issue_number < $5)
+        )
+      `;
+      params.push(
+        decodedCursor.created_at,
+        decodedCursor.repo_full_name,
+        decodedCursor.issue_number,
+      );
+    }
+
+    const rows: Array<{
+      repo_full_name: string;
+      issue_number: number;
+      created_at: string;
+      [key: string]: unknown;
+    }> = await this.dataSource.query(
       `
       SELECT
         LOWER(i.repo_full_name)         AS repo_full_name,
@@ -211,16 +337,30 @@ export class MinersService {
           (i.state = 'OPEN' AND ($2::timestamptz IS NULL OR i.created_at >= $2))
           OR (i.state = 'CLOSED' AND i.closed_at >= $2)
         )
-      ORDER BY i.created_at DESC
+        ${keysetClause}
+      ORDER BY i.created_at DESC, i.repo_full_name DESC, i.issue_number DESC
+      LIMIT ${effectiveLimit + 1}
       `,
-      [githubId, since],
+      params,
     );
+
+    const hasMore = rows.length > effectiveLimit;
+    const results = hasMore ? rows.slice(0, effectiveLimit) : rows;
+    const nextCursor =
+      hasMore && results.length > 0
+        ? this.encodeCursor({
+            created_at: results[results.length - 1].created_at,
+            repo_full_name: results[results.length - 1].repo_full_name,
+            issue_number: results[results.length - 1].issue_number,
+          })
+        : null;
 
     return {
       github_id: githubId,
       since,
       generated_at: new Date().toISOString(),
-      issues: rows,
+      issues: results,
+      next_cursor: nextCursor,
     };
   }
 
