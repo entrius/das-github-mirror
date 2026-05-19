@@ -47,6 +47,26 @@ const PR_SELECT_COLUMNS = `
           'approved_count',                      COALESCE(rs.approved_count, 0),
           'commented_count',                     COALESCE(rs.commented_count, 0)
         ) AS review_summary,
+        json_build_object(
+          'conversation_comment_count',       COALESCE(pds.conversation_comment_count, 0),
+          'conversation_unique_authors',      COALESCE(pds.conversation_unique_authors, 0),
+          'maintainer_conversation_comments', COALESCE(pds.maintainer_conversation_comments, 0),
+          'review_comment_count',             COALESCE(prc.review_comment_count, 0),
+          'review_comment_unique_authors',    COALESCE(prc.review_comment_unique_authors, 0),
+          'author_self_reply_share',
+            CASE WHEN COALESCE(pds.conversation_comment_count, 0) > 0
+              THEN ROUND(
+                (COALESCE(pds.author_self_reply_count, 0)::numeric
+                   / pds.conversation_comment_count),
+                4
+              )::float8
+              ELSE 0::float8
+            END,
+          'last_activity_at',                 GREATEST(
+            pds.last_conversation_comment_at,
+            prc.last_review_comment_at
+          )
+        ) AS discussion_summary,
         COALESCE((
           SELECT json_agg(json_build_object(
             'name',              plt.label_name,
@@ -102,6 +122,21 @@ const ISSUE_SELECT_COLUMNS = `
         i.last_edited_at,
         i.is_transferred,
         i.solved_by_pr,
+        json_build_object(
+          'conversation_comment_count',       COALESCE(ids.conversation_comment_count, 0),
+          'conversation_unique_authors',      COALESCE(ids.conversation_unique_authors, 0),
+          'maintainer_conversation_comments', COALESCE(ids.maintainer_conversation_comments, 0),
+          'author_self_reply_share',
+            CASE WHEN COALESCE(ids.conversation_comment_count, 0) > 0
+              THEN ROUND(
+                (COALESCE(ids.author_self_reply_count, 0)::numeric
+                   / ids.conversation_comment_count),
+                4
+              )::float8
+              ELSE 0::float8
+            END,
+          'last_activity_at',                 ids.last_conversation_comment_at
+        ) AS discussion_summary,
         COALESCE((
           SELECT json_agg(json_build_object(
             'name',              ilt.label_name,
@@ -180,6 +215,12 @@ export class MinersService {
       LEFT JOIN pr_review_summary rs
         ON rs.repo_full_name = p.repo_full_name
        AND rs.pr_number      = p.pr_number
+      LEFT JOIN pr_discussion_summary pds
+        ON pds.repo_full_name = p.repo_full_name
+       AND pds.pr_number      = p.pr_number
+      LEFT JOIN pr_review_comment_summary prc
+        ON prc.repo_full_name = p.repo_full_name
+       AND prc.pr_number      = p.pr_number
       LEFT JOIN repos r
         ON r.repo_full_name = p.repo_full_name
       WHERE p.author_github_id = $1
@@ -229,6 +270,12 @@ export class MinersService {
       LEFT JOIN pr_review_summary rs
         ON rs.repo_full_name = p.repo_full_name
        AND rs.pr_number      = p.pr_number
+      LEFT JOIN pr_discussion_summary pds
+        ON pds.repo_full_name = p.repo_full_name
+       AND pds.pr_number      = p.pr_number
+      LEFT JOIN pr_review_comment_summary prc
+        ON prc.repo_full_name = p.repo_full_name
+       AND prc.pr_number      = p.pr_number
       LEFT JOIN repos r
         ON r.repo_full_name = p.repo_full_name
       WHERE p.author_github_id = $1
@@ -263,6 +310,9 @@ export class MinersService {
       `
       SELECT${ISSUE_SELECT_COLUMNS}
       FROM issues i
+      LEFT JOIN issue_discussion_summary ids
+        ON ids.repo_full_name = i.repo_full_name
+       AND ids.issue_number   = i.issue_number
       WHERE i.author_github_id = $1
         AND (
           (i.state = 'OPEN' AND ($2::timestamptz IS NULL OR i.created_at >= $2))
@@ -306,6 +356,9 @@ export class MinersService {
       FROM issues i
       JOIN windows w
         ON w.repo_full_name = LOWER(i.repo_full_name)
+      LEFT JOIN issue_discussion_summary ids
+        ON ids.repo_full_name = i.repo_full_name
+       AND ids.issue_number   = i.issue_number
       WHERE i.author_github_id = $1
         AND (
           (i.state = 'OPEN' AND i.created_at >= w.since)
