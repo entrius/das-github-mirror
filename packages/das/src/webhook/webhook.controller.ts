@@ -48,16 +48,26 @@ export class WebhookController {
       return { accepted: false };
     }
 
-    await this.webhookService.handleEvent(
-      event,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      req.body as Record<string, any>,
-      deliveryId,
-    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const payload = req.body as Record<string, any>;
 
-    // Only mark processed on handler success — a thrown error leaves
-    // processed_at NULL so GitHub's retry will re-claim the row.
-    await this.webhookService.markProcessed(deliveryId);
+    // Store payload for potential replay (30-day retention)
+    await this.webhookService.storeDeliveryPayload(deliveryId, event, payload);
+
+    try {
+      await this.webhookService.handleEvent(event, payload, deliveryId);
+
+      // Only mark processed on handler success — a thrown error leaves
+      // processed_at NULL so GitHub's retry will re-claim the row.
+      await this.webhookService.markProcessed(deliveryId);
+    } catch (error) {
+      // Mark delivery as failed for debugging and potential replay
+      await this.webhookService.markFailed(
+        deliveryId,
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      throw error;
+    }
 
     return { accepted: true };
   }

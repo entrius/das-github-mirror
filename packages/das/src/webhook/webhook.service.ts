@@ -2,7 +2,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, Repository } from "typeorm";
-import { Repo } from "../entities";
+import { Repo, WebhookDelivery } from "../entities";
 import { PullRequestHandler } from "./handlers/pull-request.handler";
 import { IssueHandler } from "./handlers/issue.handler";
 import { ReviewHandler } from "./handlers/review.handler";
@@ -18,6 +18,8 @@ export class WebhookService {
   constructor(
     @InjectRepository(Repo)
     private readonly repoRepo: Repository<Repo>,
+    @InjectRepository(WebhookDelivery)
+    private readonly deliveryRepo: Repository<WebhookDelivery>,
     private readonly dataSource: DataSource,
     private readonly pullRequestHandler: PullRequestHandler,
     private readonly issueHandler: IssueHandler,
@@ -55,10 +57,32 @@ export class WebhookService {
     return existing[0]?.processed_at == null;
   }
 
+  async storeDeliveryPayload(
+    deliveryId: string,
+    eventType: string,
+    payload: Record<string, any>,
+  ): Promise<void> {
+    await this.dataSource.query(
+      `UPDATE webhook_deliveries 
+       SET event_type = $2, payload = $3 
+       WHERE delivery_id = $1`,
+      [deliveryId, eventType, JSON.stringify(payload)],
+    );
+  }
+
   async markProcessed(deliveryId: string): Promise<void> {
     await this.dataSource.query(
       `UPDATE webhook_deliveries SET processed_at = NOW() WHERE delivery_id = $1`,
       [deliveryId],
+    );
+  }
+
+  async markFailed(deliveryId: string, error: Error): Promise<void> {
+    await this.dataSource.query(
+      `UPDATE webhook_deliveries 
+       SET failed_at = NOW(), last_error = $2 
+       WHERE delivery_id = $1`,
+      [deliveryId, error.message + (error.stack ? `\n${error.stack}` : "")],
     );
   }
 

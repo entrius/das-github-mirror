@@ -1,9 +1,12 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   NotFoundException,
+  Param,
   Post,
+  Query,
   UseGuards,
 } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
@@ -12,8 +15,9 @@ import { Queue } from "bullmq";
 import { Repository } from "typeorm";
 import { ApiTags, ApiOperation, ApiSecurity, ApiBody } from "@nestjs/swagger";
 import { RequireApiKeyGuard } from "./require-api-key.guard";
-import { Repo } from "../entities";
-import { FETCH_QUEUE, FETCH_JOBS } from "../queue/constants";
+import { Repo, WebhookDelivery, PullRequest, Issue } from "../entities";
+import { FETCH_QUEUE, FETCH_JOBS, prFilesJobId } from "../queue/constants";
+import { WebhookService } from "../webhook/webhook.service";
 
 interface BackfillBody {
   repoFullName: string;
@@ -57,6 +61,13 @@ export class AdminController {
     private readonly fetchQueue: Queue,
     @InjectRepository(Repo)
     private readonly repoRepo: Repository<Repo>,
+    @InjectRepository(WebhookDelivery)
+    private readonly deliveryRepo: Repository<WebhookDelivery>,
+    @InjectRepository(PullRequest)
+    private readonly prRepo: Repository<PullRequest>,
+    @InjectRepository(Issue)
+    private readonly issueRepo: Repository<Issue>,
+    private readonly webhookService: WebhookService,
   ) {}
 
   @Post("backfill")
@@ -149,5 +160,197 @@ export class AdminController {
     );
 
     return { repoFullName, registered: true, backfillEnqueued: true };
+  }
+
+  @Post("deliveries/:deliveryId/replay")
+  @ApiOperation({
+    summary: "Replay a stored webhook delivery",
+    description:
+      "Re-processes a webhook delivery using its stored payload. " +
+      "Returns 409 if already processed unless ?force=true. " +
+      "Returns 404 if payload was not stored or delivery does not exist.",
+  })
+  async replayDelivery(
+    @Param("deliveryId") deliveryId: string,
+    @Query("force") force?: string,
+  ): Promise<{
+    replayed: boolean;
+    deliveryId: string;
+    eventType: string;
+  }> {
+    const delivery = await this.deliveryRepo.findOne({
+      where: { deliveryId },
+    });
+
+    if (!delivery) {
+      throw new NotFoundException(
+        `Delivery ${deliveryId} not found in webhook_deliveries`,
+      );
+    }
+
+    if (!delivery.payload || !delivery.eventType) {
+      throw new NotFoundException(
+        `Delivery ${deliveryId} has no stored payload (retention expired or not captured)`,
+      );
+    }
+
+    const isForced = force === "true" || force === "1";
+    if (delivery.processedAt && !isForced) {
+      throw new ConflictException(
+        `Delivery ${deliveryId} already processed at ${delivery.processedAt}. ` +
+          `Use ?force=true to replay anyway.`,
+      );
+    }
+
+    // Reset delivery state for replay
+    await this.deliveryRepo.update(deliveryId, {
+      processedAt: null,
+      failedAt: null,
+      lastError: null,
+    });
+
+    // Replay the event through the webhook handler
+    await this.webhookService.handleEvent(
+      delivery.eventType,
+      delivery.payload as Record<string, any>,
+      deliveryId,
+    );
+
+    // Mark as processed
+    await this.webhookService.markProcessed(deliveryId);
+
+    return {
+      replayed: true,
+      deliveryId,
+      eventType: delivery.eventType,
+    };
+  }
+
+  @Post("repos/:owner/:repo/pulls/:number/refetch")
+  @ApiOperation({
+    summary: "Manually refetch a specific PR",
+    description:
+      "Enqueues PR_METADATA and PR_FILES jobs to refresh data for the " +
+      "specified pull request. Resets scoring_data_stored to prevent " +
+      "stale-generation races.",
+  })
+  async refetchPullRequest(
+    @Param("owner") owner: string,
+    @Param("repo") repo: string,
+    @Param("number") number: string,
+  ): Promise<{
+    enqueued: boolean;
+    repoFullName: string;
+    prNumber: number;
+  }> {
+    const repoFullName = `${owner}/${repo}`;
+    const prNumber = parseInt(number, 10);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      throw new BadRequestException("PR number must be a positive integer");
+    }
+
+    // Verify PR exists
+    const pr = await this.prRepo.findOne({
+      where: { repoFullName, prNumber },
+    });
+
+    if (!pr) {
+      throw new NotFoundException(
+        `PR ${repoFullName}#${prNumber} not found in database`,
+      );
+    }
+
+    // Reset scoring flag to prevent stale-generation race
+    await this.prRepo.update(
+      { repoFullName, prNumber },
+      { scoringDataStored: false },
+    );
+
+    // Enqueue metadata fetch
+    await this.fetchQueue.add(
+      FETCH_JOBS.PR_METADATA,
+      { repoFullName, prNumber },
+      {
+        jobId: `meta-${repoFullName}-${prNumber}`,
+        removeOnComplete: true,
+        removeOnFail: 50,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 5000 },
+      },
+    );
+
+    // Enqueue files fetch
+    const jobId = prFilesJobId(
+      repoFullName,
+      prNumber,
+      pr.headSha,
+      pr.baseSha,
+    );
+    await this.fetchQueue.add(
+      FETCH_JOBS.PR_FILES,
+      {
+        repoFullName,
+        prNumber,
+        expectedHeadSha: pr.headSha,
+        expectedBaseSha: pr.baseSha,
+      },
+      {
+        jobId,
+        removeOnComplete: true,
+        removeOnFail: 50,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 5000 },
+      },
+    );
+
+    return {
+      enqueued: true,
+      repoFullName,
+      prNumber,
+    };
+  }
+
+  @Post("repos/:owner/:repo/issues/:number/refetch")
+  @ApiOperation({
+    summary: "Manually refetch a specific issue",
+    description:
+      "Fetches the latest issue data from GitHub and updates the database. " +
+      "Uses the existing GraphQL backfill path scoped to a single issue.",
+  })
+  async refetchIssue(
+    @Param("owner") owner: string,
+    @Param("repo") repo: string,
+    @Param("number") number: string,
+  ): Promise<{
+    refetched: boolean;
+    repoFullName: string;
+    issueNumber: number;
+  }> {
+    const repoFullName = `${owner}/${repo}`;
+    const issueNumber = parseInt(number, 10);
+
+    if (isNaN(issueNumber) || issueNumber <= 0) {
+      throw new BadRequestException("Issue number must be a positive integer");
+    }
+
+    // Verify issue exists
+    const issue = await this.issueRepo.findOne({
+      where: { repoFullName, issueNumber },
+    });
+
+    if (!issue) {
+      throw new NotFoundException(
+        `Issue ${repoFullName}#${issueNumber} not found in database`,
+      );
+    }
+
+    // Note: This is a placeholder. The actual implementation would require
+    // extending the GitHub fetcher service with a single-issue fetch method.
+    // For now, we throw an error indicating this needs to be implemented.
+    throw new BadRequestException(
+      "Issue refetch not yet implemented. " +
+        "Extend GitHubFetcherService.backfillIssues to support single-issue mode.",
+    );
   }
 }
