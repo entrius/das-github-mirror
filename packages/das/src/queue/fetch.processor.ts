@@ -147,7 +147,9 @@ export class FetchProcessor extends WorkerHost {
         {
           jobId: `meta-${repoFullName}-${prNumber}`,
           removeOnComplete: true,
-          removeOnFail: 50,
+          // Match the webhook handler — failed metadata jobs must not squat
+          // on the stable per-PR jobId (#75).
+          removeOnFail: true,
           attempts: 3,
           backoff: { type: "exponential", delay: 5000 },
         },
