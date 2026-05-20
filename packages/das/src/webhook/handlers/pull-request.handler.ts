@@ -87,8 +87,7 @@ export class PullRequestHandler {
     // changes; stored pr_files were resolved against the old base and need a
     // fresh fetch even when head_sha is unchanged.
     const diffActions = ["opened", "synchronize", "closed"];
-    const isBaseRetarget =
-      action === "edited" && payload.changes?.base != null;
+    const isBaseRetarget = action === "edited" && payload.changes?.base != null;
     const shouldFetchDiff =
       (diffActions.includes(action) && (action !== "closed" || pr.merged)) ||
       isBaseRetarget;
