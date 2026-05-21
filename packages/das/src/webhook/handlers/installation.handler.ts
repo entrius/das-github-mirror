@@ -45,7 +45,7 @@ export class InstallationHandler {
         .insert()
         .into(Repo)
         .values({
-          repoFullName: repo.full_name,
+          repoFullName: (repo.full_name as string).toLowerCase(),
           installationId: String(installationId),
           addedAt: new Date().toISOString(),
         })
@@ -55,12 +55,17 @@ export class InstallationHandler {
     }
 
     // installation_repositories.removed — soft clear, preserve historical data.
+    // Use LOWER() to handle rows stored with any casing (admin API vs webhook paths).
     const removed: any[] = payload.repositories_removed ?? [];
     for (const repo of removed) {
-      await this.repoRepo.update(repo.full_name, {
-        installationId: null,
-        registered: false,
-      });
+      await this.repoRepo
+        .createQueryBuilder()
+        .update()
+        .set({ installationId: null, registered: false })
+        .where("LOWER(repo_full_name) = LOWER(:name)", {
+          name: repo.full_name,
+        })
+        .execute();
       this.logger.log(`Stopped tracking repo: ${repo.full_name}`);
     }
   }
