@@ -46,6 +46,7 @@ export class InstallationHandler {
         .into(Repo)
         .values({
           repoFullName: (repo.full_name as string).toLowerCase(),
+          repoFullName: repo.full_name,
           installationId: String(installationId),
           addedAt: new Date().toISOString(),
         })

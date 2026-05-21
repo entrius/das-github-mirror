@@ -53,9 +53,15 @@ export class PullRequestHandler {
 
     await this.prRepo.upsert(data, ["repoFullName", "prNumber"]);
 
-    await this.repoRepo.update(repoFullName, {
+    const repoUpdate: Partial<Repo> = {
       lastEventAt: new Date().toISOString(),
-    });
+    };
+    const defaultBranch: string | null =
+      payload.repository?.default_branch ?? null;
+    if (defaultBranch) {
+      repoUpdate.defaultBranch = defaultBranch;
+    }
+    await this.repoRepo.update(repoFullName, repoUpdate);
 
     // Enqueue metadata fetch (closing issues + body + lastEditedAt) on relevant actions.
     // Also run on `edited` so post-merge body edits are captured.
@@ -73,9 +79,11 @@ export class PullRequestHandler {
         { repoFullName, prNumber },
         {
           jobId,
-          // Replace any pending job for the same PR (e.g. rapid pushes)
+          // Pending/active jobs for the same PR still dedupe by jobId.
+          // Don't retain failed jobs — they'd block future enqueues for this
+          // PR until the failed-set cap evicts them (#75).
           removeOnComplete: true,
-          removeOnFail: 50,
+          removeOnFail: true,
           attempts: 3,
           backoff: { type: "exponential", delay: 5000 },
         },

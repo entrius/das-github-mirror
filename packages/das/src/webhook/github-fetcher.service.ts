@@ -150,6 +150,14 @@ export class GitHubFetcherService implements OnModuleInit {
     return 60_000;
   }
 
+  private assertNoGraphQLErrors(body: any, context: string): void {
+    if (!body?.errors) return;
+
+    throw new Error(
+      `${context} GraphQL errors: ${JSON.stringify(body.errors)}`,
+    );
+  }
+
   // --- Authentication ---
 
   private createAppJwt(): string {
@@ -319,7 +327,13 @@ export class GitHubFetcherService implements OnModuleInit {
     }
 
     const body: any = await res.json();
-    const pr = body.data?.repository?.pullRequest ?? {};
+    this.assertNoGraphQLErrors(body, "PR metadata fetch");
+
+    const pr = body.data?.repository?.pullRequest;
+    if (!pr) {
+      throw new Error(`GraphQL PR metadata fetch returned no PR data`);
+    }
+
     const nodes = pr.closingIssuesReferences?.nodes ?? [];
 
     return {
@@ -606,11 +620,7 @@ export class GitHubFetcherService implements OnModuleInit {
     }
 
     const body: any = await res.json();
-    if (body.errors) {
-      throw new Error(
-        `GraphQL content fetch errors: ${JSON.stringify(body.errors)}`,
-      );
-    }
+    this.assertNoGraphQLErrors(body, "Content fetch");
 
     const repoData = body.data?.repository ?? {};
 
@@ -786,9 +796,13 @@ export class GitHubFetcherService implements OnModuleInit {
       }
 
       const body: any = await res.json();
+      this.assertNoGraphQLErrors(body, "Backfill PR fetch");
+
       const repoData: any = body.data?.repository;
       const page: any = repoData?.pullRequests;
-      if (!page) break;
+      if (!page) {
+        throw new Error(`Backfill PR GraphQL returned no pullRequests page`);
+      }
 
       // defaultBranchRef is the same across every page — write once.
       if (!defaultBranchWritten) {
@@ -969,8 +983,12 @@ export class GitHubFetcherService implements OnModuleInit {
       }
 
       const body: any = await res.json();
+      this.assertNoGraphQLErrors(body, "Backfill issue fetch");
+
       const page: any = body.data?.repository?.issues;
-      if (!page) break;
+      if (!page) {
+        throw new Error(`Backfill issue GraphQL returned no issues page`);
+      }
 
       let shouldStop = false;
       for (const issue of page.nodes) {
