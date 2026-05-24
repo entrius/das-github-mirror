@@ -118,7 +118,9 @@ export class PullRequestHandler {
         {
           jobId,
           removeOnComplete: true,
-          removeOnFail: 50,
+          // Match PR_METADATA (#75/#118) — failed files jobs must not squat
+          // on the stable per-SHA jobId (#124).
+          removeOnFail: true,
           attempts: 3,
           backoff: { type: "exponential", delay: 5000 },
         },
