@@ -1,6 +1,12 @@
 /* eslint-disable @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-assignment */
 import { Injectable } from "@nestjs/common";
 import { DataSource } from "typeorm";
+import {
+  buildPaginatedResponse,
+  keysetParams,
+  keysetSql,
+  PaginationParams,
+} from "./pagination";
 
 const DEFAULT_SINCE_DAYS = 35;
 
@@ -174,12 +180,54 @@ export class MinersService {
   async getPullRequests(
     githubId: string,
     since: string,
+    pagination: PaginationParams | null,
   ): Promise<{
     github_id: string;
     since: string;
     generated_at: string;
     pull_requests: unknown[];
+    next_cursor?: string | null;
   }> {
+    if (!pagination) {
+      const rows = await this.dataSource.query(
+        `
+        SELECT${PR_SELECT_COLUMNS}
+        FROM pull_requests p
+        LEFT JOIN pr_review_summary rs
+          ON rs.repo_full_name = p.repo_full_name
+         AND rs.pr_number      = p.pr_number
+        LEFT JOIN repos r
+          ON r.repo_full_name = p.repo_full_name
+        WHERE p.author_github_id = $1
+          AND (
+            (p.state = 'OPEN'   AND p.created_at >= $2)
+            OR (p.state = 'MERGED' AND p.merged_at >= $2)
+            OR (p.state = 'CLOSED' AND p.created_at >= $2)
+          )
+        ORDER BY p.created_at DESC
+        `,
+        [githubId, since],
+      );
+
+      return {
+        github_id: githubId,
+        since,
+        generated_at: new Date().toISOString(),
+        pull_requests: rows,
+      };
+    }
+
+    const { limit, cursor } = pagination;
+    const params: unknown[] = [githubId, since];
+    let keysetClause = "";
+    if (cursor) {
+      const startIdx = params.length + 1;
+      keysetClause = `AND ${keysetSql("p", "pr_number", startIdx)}`;
+      params.push(...keysetParams(cursor));
+    }
+    const limitIdx = params.length + 1;
+    params.push(limit + 1);
+
     const rows = await this.dataSource.query(
       `
       SELECT${PR_SELECT_COLUMNS}
@@ -195,16 +243,29 @@ export class MinersService {
           OR (p.state = 'MERGED' AND p.merged_at >= $2)
           OR (p.state = 'CLOSED' AND p.created_at >= $2)
         )
-      ORDER BY p.created_at DESC
+        ${keysetClause}
+      ORDER BY p.created_at DESC, LOWER(p.repo_full_name) DESC, p.pr_number DESC
+      LIMIT $${limitIdx}
       `,
-      [githubId, since],
+      params,
+    );
+
+    const page = buildPaginatedResponse(
+      rows as Record<string, unknown>[],
+      limit,
+      (row) => ({
+        created_at: row.created_at as string,
+        repo_full_name: row.repo_full_name as string,
+        pr_number: row.pr_number as number,
+      }),
     );
 
     return {
       github_id: githubId,
       since,
       generated_at: new Date().toISOString(),
-      pull_requests: rows,
+      pull_requests: page.items,
+      next_cursor: page.nextCursor,
     };
   }
 
@@ -260,12 +321,48 @@ export class MinersService {
   async getIssues(
     githubId: string,
     since: string | null,
+    pagination: PaginationParams | null,
   ): Promise<{
     github_id: string;
     since: string | null;
     generated_at: string;
     issues: unknown[];
+    next_cursor?: string | null;
   }> {
+    if (!pagination) {
+      const rows = await this.dataSource.query(
+        `
+        SELECT${ISSUE_SELECT_COLUMNS}
+        FROM issues i
+        WHERE i.author_github_id = $1
+          AND (
+            (i.state = 'OPEN' AND ($2::timestamptz IS NULL OR i.created_at >= $2))
+            OR (i.state = 'CLOSED' AND i.closed_at >= $2)
+          )
+        ORDER BY i.created_at DESC
+        `,
+        [githubId, since],
+      );
+
+      return {
+        github_id: githubId,
+        since,
+        generated_at: new Date().toISOString(),
+        issues: rows,
+      };
+    }
+
+    const { limit, cursor } = pagination;
+    const params: unknown[] = [githubId, since];
+    let keysetClause = "";
+    if (cursor) {
+      const startIdx = params.length + 1;
+      keysetClause = `AND ${keysetSql("i", "issue_number", startIdx)}`;
+      params.push(...keysetParams(cursor));
+    }
+    const limitIdx = params.length + 1;
+    params.push(limit + 1);
+
     const rows = await this.dataSource.query(
       `
       SELECT${ISSUE_SELECT_COLUMNS}
@@ -275,16 +372,29 @@ export class MinersService {
           (i.state = 'OPEN' AND ($2::timestamptz IS NULL OR i.created_at >= $2))
           OR (i.state = 'CLOSED' AND i.closed_at >= $2)
         )
-      ORDER BY i.created_at DESC
+        ${keysetClause}
+      ORDER BY i.created_at DESC, LOWER(i.repo_full_name) DESC, i.issue_number DESC
+      LIMIT $${limitIdx}
       `,
-      [githubId, since],
+      params,
+    );
+
+    const page = buildPaginatedResponse(
+      rows as Record<string, unknown>[],
+      limit,
+      (row) => ({
+        created_at: row.created_at as string,
+        repo_full_name: row.repo_full_name as string,
+        issue_number: row.issue_number as number,
+      }),
     );
 
     return {
       github_id: githubId,
       since,
       generated_at: new Date().toISOString(),
-      issues: rows,
+      issues: page.items,
+      next_cursor: page.nextCursor,
     };
   }
 
