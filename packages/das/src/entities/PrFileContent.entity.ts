@@ -8,7 +8,7 @@ export class PrFileContent {
   @PrimaryColumn({ name: "pr_number" })
   prNumber: number;
 
-  @PrimaryColumn()
+  @PrimaryColumn({ type: "text" })
   filename: string;
 
   @Column({ name: "base_content", type: "text", nullable: true })
