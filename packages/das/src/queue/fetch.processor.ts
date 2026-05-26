@@ -5,6 +5,7 @@ import { IsNull, Repository } from "typeorm";
 import { Job, Queue } from "bullmq";
 import { Issue, PullRequest } from "../entities";
 import { GitHubFetcherService } from "../webhook/github-fetcher.service";
+import { RegistryReconcilerService } from "./registry-reconciler.service";
 import {
   FETCH_QUEUE,
   FETCH_JOBS,
@@ -57,6 +58,7 @@ export class FetchProcessor extends WorkerHost {
     private readonly issueRepo: Repository<Issue>,
     @InjectQueue(FETCH_QUEUE)
     private readonly fetchQueue: Queue,
+    private readonly registryReconciler: RegistryReconcilerService,
   ) {
     super();
   }
@@ -80,6 +82,10 @@ export class FetchProcessor extends WorkerHost {
       case FETCH_JOBS.ISSUE_CLOSURE: {
         const { repoFullName, issueNumber } = job.data as IssueClosureJobData;
         await this.handleIssueClosure(repoFullName, issueNumber);
+        break;
+      }
+      case FETCH_JOBS.RECONCILE_REGISTRY: {
+        await this.registryReconciler.reconcile();
         break;
       }
       default:
