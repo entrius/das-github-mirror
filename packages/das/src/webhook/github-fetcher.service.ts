@@ -31,6 +31,13 @@ const MAX_FILE_SIZE_BYTES = 1_000_000;
 // Starting batch size for batched GraphQL file-content requests. Halves on failure.
 const GRAPHQL_FILES_BATCH_SIZE = 50;
 
+// Max skew between a live label webhook's mirror-receive time and the GitHub
+// event createdAt that backfill records, used to pair a provisional live row to
+// its authoritative backfill row (#129). Covers normal webhook delivery latency
+// plus clock skew; kept small so genuine repeat actions (add -> remove -> re-add)
+// aren't merged. MUST match the interval in packages/db/07_label_events.sql.
+const LABEL_EVENT_RECONCILE_WINDOW_SECONDS = 120;
+
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -732,6 +739,7 @@ export class GitHubFetcherService implements OnModuleInit {
                 nodes {
                   __typename
                   ... on LabeledEvent {
+                    id
                     createdAt
                     label { name }
                     actor {
@@ -740,6 +748,7 @@ export class GitHubFetcherService implements OnModuleInit {
                     }
                   }
                   ... on UnlabeledEvent {
+                    id
                     createdAt
                     label { name }
                     actor {
@@ -921,6 +930,7 @@ export class GitHubFetcherService implements OnModuleInit {
                     createdAt
                   }
                   ... on LabeledEvent {
+                    id
                     createdAt
                     label { name }
                     actor {
@@ -929,6 +939,7 @@ export class GitHubFetcherService implements OnModuleInit {
                     }
                   }
                   ... on UnlabeledEvent {
+                    id
                     createdAt
                     label { name }
                     actor {
@@ -1027,12 +1038,14 @@ export class GitHubFetcherService implements OnModuleInit {
   }
 
   /**
-   * Insert LABELED_EVENT / UNLABELED_EVENT timeline nodes into label_events.
-   * Idempotent: relies on the uq_label_events_natural_key UNIQUE index so
-   * re-running backfill (or BullMQ retries) collapses to a no-op for events
-   * already written. Actor role is resolved at read time via
-   * contributor_repo_roles using stored PR/issue, review, and comment
-   * association evidence; GraphQL's actor type doesn't expose authorAssociation.
+   * Insert LABELED_EVENT / UNLABELED_EVENT timeline nodes into label_events as
+   * the authoritative record (github_node_id set, timestamp = GitHub createdAt).
+   * Idempotent across backfill re-runs via the uq_label_events_github_node_id
+   * partial unique index — same node id collapses to a no-op. After writing, it
+   * reconciles away any provisional live-webhook duplicates (see #129). Actor
+   * role is resolved at read time via contributor_repo_roles using stored
+   * PR/issue, review, and comment association evidence; GraphQL's actor type
+   * doesn't expose authorAssociation.
    */
   private async saveLabelTimelineEvents(
     repoFullName: string,
@@ -1041,7 +1054,7 @@ export class GitHubFetcherService implements OnModuleInit {
     nodes: any[],
   ): Promise<void> {
     const rows = nodes
-      .filter((node) => node && node.label?.name && node.createdAt)
+      .filter((node) => node && node.id && node.label?.name && node.createdAt)
       .map((node) => ({
         repoFullName,
         targetNumber,
@@ -1053,6 +1066,7 @@ export class GitHubFetcherService implements OnModuleInit {
           : null,
         actorLogin: node.actor?.login ?? null,
         timestamp: node.createdAt,
+        githubNodeId: node.id,
       }));
 
     if (rows.length === 0) return;
@@ -1063,5 +1077,61 @@ export class GitHubFetcherService implements OnModuleInit {
       .values(rows)
       .orIgnore()
       .execute();
+
+    await this.reconcileProvisionalLabelEvents(
+      repoFullName,
+      targetNumber,
+      targetType,
+    );
+  }
+
+  /**
+   * Collapse the live↔backfill cross-path duplicate (#129). The live webhook
+   * can only write a provisional row (github_node_id NULL, timestamp = mirror
+   * receive time); backfill writes the authoritative row (github_node_id set,
+   * timestamp = GitHub createdAt). The two timestamps never match, so they can't
+   * be deduped by key. Here, once the authoritative rows exist, delete each
+   * provisional row that an authoritative row supersedes.
+   *
+   * Pairing is 1:1 and nearest-in-time: each authoritative row claims at most
+   * the single closest provisional row (same repo/target/label/action) within
+   * the delivery-latency window. A provisional row with no authoritative row to
+   * claim it survives — so events backfill hasn't captured yet (or were dropped
+   * by the timeline's truncation) are never lost.
+   */
+  private async reconcileProvisionalLabelEvents(
+    repoFullName: string,
+    targetNumber: number,
+    targetType: "pr" | "issue",
+  ): Promise<void> {
+    await this.labelEventRepo.query(
+      `
+      DELETE FROM label_events
+      WHERE id IN (
+        SELECT DISTINCT ON (auth.id) prov.id
+        FROM label_events auth
+        JOIN label_events prov
+          ON prov.repo_full_name = auth.repo_full_name
+         AND prov.target_number IS NOT DISTINCT FROM auth.target_number
+         AND prov.target_type   = auth.target_type
+         AND prov.label_name    = auth.label_name
+         AND prov.action        = auth.action
+         AND prov.github_node_id IS NULL
+         AND auth.timestamp BETWEEN prov.timestamp - ($4::int * interval '1 second')
+                                AND prov.timestamp + ($4::int * interval '1 second')
+        WHERE auth.repo_full_name = $1
+          AND auth.target_number IS NOT DISTINCT FROM $2
+          AND auth.target_type   = $3
+          AND auth.github_node_id IS NOT NULL
+        ORDER BY auth.id, abs(extract(epoch FROM (auth.timestamp - prov.timestamp)))
+      )
+      `,
+      [
+        repoFullName,
+        targetNumber,
+        targetType,
+        LABEL_EVENT_RECONCILE_WINDOW_SECONDS,
+      ],
+    );
   }
 }

@@ -28,4 +28,10 @@ export class LabelEvent {
 
   @Column({ type: "timestamptz" })
   timestamp: string;
+
+  // Globally-unique id of the GraphQL LabeledEvent/UnlabeledEvent node — the
+  // only path-independent event identity. Set on authoritative backfill rows;
+  // NULL on provisional live-webhook rows (the payload doesn't carry it).
+  @Column({ name: "github_node_id", type: "varchar", nullable: true })
+  githubNodeId: string | null;
 }

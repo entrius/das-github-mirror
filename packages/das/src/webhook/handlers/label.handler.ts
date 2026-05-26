@@ -33,13 +33,17 @@ export class LabelHandler {
     const targetNumber: number =
       source === "pr" ? payload.pull_request.number : payload.issue.number;
 
-    // Append to label_events log. Actor's repo role is resolved at read time
-    // via contributor_repo_roles (see pr_labels_by_actor view) using stored
-    // PR/issue, review, and comment association evidence — neither the webhook
-    // sender nor GraphQL LabeledEvent.actor expose author_association.
-    // orIgnore() makes the insert idempotent under the uq_label_events_natural_key
-    // constraint; same-delivery retries are already gated upstream by
-    // webhook_deliveries, this is defense-in-depth.
+    // Append a PROVISIONAL row to label_events. The webhook payload carries no
+    // LabeledEvent/UnlabeledEvent node id, so github_node_id is left NULL and the
+    // timestamp is the mirror-receive time (not GitHub's event time). Backfill
+    // later writes the authoritative row (github_node_id set, timestamp =
+    // createdAt) and reconciles this provisional duplicate away — the two clocks
+    // never match, so they can't be deduped by key (see #129). Actor's repo role
+    // is resolved at read time via contributor_repo_roles (see pr_labels_by_actor
+    // view) using stored PR/issue, review, and comment association evidence —
+    // neither the webhook sender nor GraphQL LabeledEvent.actor expose
+    // author_association. same-delivery retries are gated upstream by
+    // webhook_deliveries; orIgnore() is harmless defense-in-depth.
     await this.labelEventRepo
       .createQueryBuilder()
       .insert()
@@ -52,6 +56,7 @@ export class LabelHandler {
         actorGithubId: sender ? String(sender.id) : null,
         actorLogin: sender?.login ?? null,
         timestamp: new Date().toISOString(),
+        githubNodeId: null,
       })
       .orIgnore()
       .execute();
