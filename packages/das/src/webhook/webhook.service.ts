@@ -81,7 +81,7 @@ export class WebhookService {
 
     // All other events carry repo context and only persist data for registered repos.
     if (repoFullName) {
-      const repo = await this.repoRepo.findOneBy({ repoFullName });
+      const repo = await this.findRepoByFullName(repoFullName);
       if (!repo?.registered) {
         this.logger.log(
           `Skipping ${event}: repo ${repoFullName} not registered`,
@@ -121,6 +121,16 @@ export class WebhookService {
       default:
         this.logger.debug(`Unhandled event type: ${event}`);
     }
+  }
+
+  /** GitHub repo names are case-insensitive; match admin register / getTokenForRepo. */
+  private async findRepoByFullName(repoFullName: string): Promise<Repo | null> {
+    return this.repoRepo
+      .createQueryBuilder("repo")
+      .where("LOWER(repo.repo_full_name) = LOWER(:repoFullName)", {
+        repoFullName,
+      })
+      .getOne();
   }
 
   private async handleRepositoryEvent(
