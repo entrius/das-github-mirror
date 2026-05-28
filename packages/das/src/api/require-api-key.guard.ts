@@ -28,7 +28,8 @@ export class RequireApiKeyGuard implements CanActivate {
 
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
-    const key = req.headers["x-api-key"];
+    const rawKey = req.headers["x-api-key"];
+    const key = typeof rawKey === "string" ? rawKey.trim() : rawKey;
 
     if (this.apiKeys.size === 0) {
       throw new UnauthorizedException(
