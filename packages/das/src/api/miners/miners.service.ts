@@ -156,6 +156,7 @@ const ISSUE_SELECT_COLUMNS = `
             AND sp.pr_number      = i.solved_by_pr
             -- Skip null-author solving PRs (no one to credit)
             AND sp.author_github_id IS NOT NULL
+            AND BTRIM(sp.author_github_id) <> ''
             -- Skip corrupted MERGED-without-merged_at shape
             AND NOT (sp.state = 'MERGED' AND sp.merged_at IS NULL)
         ) AS solving_pr`;
