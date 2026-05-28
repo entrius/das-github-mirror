@@ -13,6 +13,7 @@ import { Repository } from "typeorm";
 import { ApiTags, ApiOperation, ApiSecurity, ApiBody } from "@nestjs/swagger";
 import { RequireApiKeyGuard } from "./require-api-key.guard";
 import { Repo } from "../entities";
+import { findRepoByFullNameInsensitive } from "../repos/find-repo-by-full-name";
 import { FETCH_QUEUE, FETCH_JOBS } from "../queue/constants";
 
 interface BackfillBody {
@@ -81,8 +82,17 @@ export class AdminController {
     repoFullName: string;
     days: number | undefined;
   }> {
-    const repoFullName = validateRepoFullName(body?.repoFullName);
+    const requested = validateRepoFullName(body?.repoFullName);
     const days = validateDays(body?.days);
+
+    const repo = await findRepoByFullNameInsensitive(this.repoRepo, requested);
+    if (!repo) {
+      throw new NotFoundException(
+        `Repo ${requested} not found — install the GitHub App first`,
+      );
+    }
+
+    const repoFullName = repo.repoFullName;
 
     await this.fetchQueue.add(
       FETCH_JOBS.BACKFILL_REPO,
@@ -121,20 +131,18 @@ export class AdminController {
     registered: true;
     backfillEnqueued: boolean;
   }> {
-    const repoFullName = validateRepoFullName(body?.repoFullName);
+    const requested = validateRepoFullName(body?.repoFullName);
 
-    const result = await this.repoRepo
-      .createQueryBuilder()
-      .update()
-      .set({ registered: true })
-      .where("LOWER(repo_full_name) = LOWER(:repoFullName)", { repoFullName })
-      .execute();
-
-    if (!result.affected) {
+    const repo = await findRepoByFullNameInsensitive(this.repoRepo, requested);
+    if (!repo) {
       throw new NotFoundException(
-        `Repo ${repoFullName} not found — install the GitHub App first`,
+        `Repo ${requested} not found — install the GitHub App first`,
       );
     }
+
+    await this.repoRepo.update(repo.repoFullName, { registered: true });
+
+    const repoFullName = repo.repoFullName;
 
     await this.fetchQueue.add(
       FETCH_JOBS.BACKFILL_REPO,

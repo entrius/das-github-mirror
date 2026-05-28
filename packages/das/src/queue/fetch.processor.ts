@@ -3,7 +3,8 @@ import { Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { IsNull, Repository } from "typeorm";
 import { Job, Queue } from "bullmq";
-import { Issue, PullRequest } from "../entities";
+import { Issue, PullRequest, Repo } from "../entities";
+import { findRepoByFullNameInsensitive } from "../repos/find-repo-by-full-name";
 import { GitHubFetcherService } from "../webhook/github-fetcher.service";
 import {
   FETCH_QUEUE,
@@ -55,6 +56,8 @@ export class FetchProcessor extends WorkerHost {
     private readonly prRepo: Repository<PullRequest>,
     @InjectRepository(Issue)
     private readonly issueRepo: Repository<Issue>,
+    @InjectRepository(Repo)
+    private readonly repoRepo: Repository<Repo>,
     @InjectQueue(FETCH_QUEUE)
     private readonly fetchQueue: Queue,
   ) {
@@ -168,28 +171,35 @@ export class FetchProcessor extends WorkerHost {
     repoFullName: string,
     days: number,
   ): Promise<void> {
-    this.logger.log(`Backfilling ${repoFullName} — last ${days} days`);
+    const repo = await findRepoByFullNameInsensitive(
+      this.repoRepo,
+      repoFullName,
+    );
+    if (!repo) {
+      this.logger.warn(`Backfill skipped: repo ${repoFullName} not found`);
+      return;
+    }
+
+    const canonical = repo.repoFullName;
+    this.logger.log(`Backfilling ${canonical} — last ${days} days`);
 
     const sinceDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
     // Fetch and upsert PRs
-    const prs = await this.fetcher.backfillPullRequests(
-      repoFullName,
-      sinceDate,
-    );
-    this.logger.log(`Backfilled ${prs.length} PRs from ${repoFullName}`);
+    const prs = await this.fetcher.backfillPullRequests(canonical, sinceDate);
+    this.logger.log(`Backfilled ${prs.length} PRs from ${canonical}`);
 
     // Fetch and upsert issues before PR metadata jobs can link solved_by_pr.
-    await this.fetcher.backfillIssues(repoFullName, sinceDate);
-    this.logger.log(`Backfilled issues from ${repoFullName}`);
+    await this.fetcher.backfillIssues(canonical, sinceDate);
+    this.logger.log(`Backfilled issues from ${canonical}`);
 
     // Enqueue follow-up jobs (metadata + files for every PR).
     for (const { prNumber, headSha, baseSha } of prs) {
       await this.fetchQueue.add(
         FETCH_JOBS.PR_METADATA,
-        { repoFullName, prNumber },
+        { repoFullName: canonical, prNumber },
         {
-          jobId: `meta-${repoFullName}-${prNumber}`,
+          jobId: `meta-${canonical}-${prNumber}`,
           removeOnComplete: true,
           // Match the webhook handler — failed metadata jobs must not squat
           // on the stable per-PR jobId (#75).
@@ -200,7 +210,7 @@ export class FetchProcessor extends WorkerHost {
       );
 
       await this.enqueuePrFilesJob(
-        repoFullName,
+        canonical,
         prNumber,
         headSha ?? null,
         baseSha ?? null,
