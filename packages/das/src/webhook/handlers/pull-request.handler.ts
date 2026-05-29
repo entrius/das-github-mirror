@@ -90,14 +90,19 @@ export class PullRequestHandler {
       );
     }
 
-    // Enqueue diff fetch on open, push, or merge
+    // Enqueue diff fetch on open, push, merge, or base-branch retarget.
+    // GitHub sends `pull_request.edited` with `changes.base` when the base ref
+    // changes; stored pr_files were resolved against the old base and need a
+    // fresh fetch even when head_sha is unchanged.
     const diffActions = ["opened", "synchronize", "closed"];
+    const isBaseRetarget = action === "edited" && payload.changes?.base != null;
     const shouldFetchDiff =
-      diffActions.includes(action) && (action !== "closed" || pr.merged);
+      (diffActions.includes(action) && (action !== "closed" || pr.merged)) ||
+      isBaseRetarget;
 
     if (shouldFetchDiff) {
-      // Reset scoring flag on new pushes
-      if (action === "synchronize") {
+      // Reset scoring flag on new pushes or base retargets
+      if (action === "synchronize" || isBaseRetarget) {
         await this.prRepo.update(
           { repoFullName, prNumber },
           { scoringDataStored: false },
