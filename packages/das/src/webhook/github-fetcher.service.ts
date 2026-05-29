@@ -25,6 +25,22 @@ interface ClosingIssueReference {
   repository?: { nameWithOwner?: string } | null;
 }
 
+interface GitHubBlob {
+  text?: string | null;
+  byteSize?: number | null;
+  isBinary?: boolean | null;
+}
+
+interface BlobRequirement {
+  blob: GitHubBlob | null | undefined;
+  required: boolean;
+  side: "base" | "head";
+  repoFullName: string;
+  prNumber: number;
+  filename: string;
+  sha: string | null;
+}
+
 // Files larger than this are stored with null content (AST parsing is wasteful past this).
 const MAX_FILE_SIZE_BYTES = 1_000_000;
 
@@ -830,8 +846,27 @@ export class GitHubFetcherService implements OnModuleInit {
     for (let i = 0; i < batch.length; i++) {
       const file = batch[i];
 
-      const baseBlob = repoData[`base${i}`];
-      const headBlob = repoData[`head${i}`];
+      const baseBlob = repoData[`base${i}`] as GitHubBlob | null | undefined;
+      const headBlob = repoData[`head${i}`] as GitHubBlob | null | undefined;
+
+      this.assertRequiredBlob({
+        blob: baseBlob,
+        required: file.status !== "added" && baseSha !== null,
+        side: "base",
+        repoFullName,
+        prNumber,
+        filename: file.previous_filename ?? file.filename,
+        sha: baseSha,
+      });
+      this.assertRequiredBlob({
+        blob: headBlob,
+        required: file.status !== "removed",
+        side: "head",
+        repoFullName,
+        prNumber,
+        filename: file.filename,
+        sha: headSha,
+      });
 
       const isBinary = !!headBlob?.isBinary || !!baseBlob?.isBinary;
 
@@ -854,7 +889,24 @@ export class GitHubFetcherService implements OnModuleInit {
     }
   }
 
-  private extractBlobText(blob: any): string | null {
+  private assertRequiredBlob({
+    blob,
+    required,
+    side,
+    repoFullName,
+    prNumber,
+    filename,
+    sha,
+  }: BlobRequirement): void {
+    if (!required || blob != null) return;
+
+    throw new Error(
+      `Missing required ${side} blob for ${repoFullName}#${prNumber} ` +
+        `${filename} at ${sha ?? "unknown sha"}`,
+    );
+  }
+
+  private extractBlobText(blob: GitHubBlob | null | undefined): string | null {
     if (!blob) return null;
     if (blob.isBinary) return null;
     if (
