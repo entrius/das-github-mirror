@@ -193,9 +193,9 @@ export class MinersService {
         AND (
           (p.state = 'OPEN'   AND p.created_at >= $2)
           OR (p.state = 'MERGED' AND p.merged_at >= $2)
-          OR (p.state = 'CLOSED' AND p.created_at >= $2)
+          OR (p.state = 'CLOSED' AND p.closed_at >= $2)
         )
-      ORDER BY p.created_at DESC
+      ORDER BY COALESCE(p.merged_at, p.closed_at, p.created_at) DESC
       `,
       [githubId, since],
     );
@@ -242,9 +242,9 @@ export class MinersService {
         AND (
           (p.state = 'OPEN'   AND p.created_at >= w.since)
           OR (p.state = 'MERGED' AND p.merged_at >= w.since)
-          OR (p.state = 'CLOSED' AND p.created_at >= w.since)
+          OR (p.state = 'CLOSED' AND p.closed_at >= w.since)
         )
-      ORDER BY p.created_at DESC
+      ORDER BY COALESCE(p.merged_at, p.closed_at, p.created_at) DESC
       `,
       [githubId, repoNames, sinceValues],
     );
