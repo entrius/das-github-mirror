@@ -185,10 +185,10 @@ export class MinersService {
       SELECT${PR_SELECT_COLUMNS}
       FROM pull_requests p
       LEFT JOIN pr_review_summary rs
-        ON rs.repo_full_name = p.repo_full_name
+        ON LOWER(rs.repo_full_name) = LOWER(p.repo_full_name)
        AND rs.pr_number      = p.pr_number
       LEFT JOIN repos r
-        ON r.repo_full_name = p.repo_full_name
+        ON LOWER(r.repo_full_name) = LOWER(p.repo_full_name)
       WHERE p.author_github_id = $1
         AND (
           (p.state = 'OPEN'   AND p.created_at >= $2)
@@ -234,10 +234,10 @@ export class MinersService {
       JOIN windows w
         ON w.repo_full_name = LOWER(p.repo_full_name)
       LEFT JOIN pr_review_summary rs
-        ON rs.repo_full_name = p.repo_full_name
+        ON LOWER(rs.repo_full_name) = LOWER(p.repo_full_name)
        AND rs.pr_number      = p.pr_number
       LEFT JOIN repos r
-        ON r.repo_full_name = p.repo_full_name
+        ON LOWER(r.repo_full_name) = LOWER(p.repo_full_name)
       WHERE p.author_github_id = $1
         AND (
           (p.state = 'OPEN'   AND p.created_at >= w.since)
