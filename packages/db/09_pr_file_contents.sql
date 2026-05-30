@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS pr_file_contents (
     repo_full_name      VARCHAR(255)    NOT NULL,
     pr_number           INTEGER         NOT NULL,
-    filename            VARCHAR(500)    NOT NULL,
+    filename            TEXT            NOT NULL,
     base_content        TEXT,
     head_content        TEXT,
     is_binary           BOOLEAN         NOT NULL DEFAULT FALSE,

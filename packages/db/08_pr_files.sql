@@ -3,8 +3,8 @@
 CREATE TABLE IF NOT EXISTS pr_files (
     repo_full_name      VARCHAR(255)    NOT NULL,
     pr_number           INTEGER         NOT NULL,
-    filename            VARCHAR(500)    NOT NULL,
-    previous_filename   VARCHAR(500),
+    filename            TEXT            NOT NULL,
+    previous_filename   TEXT           ,
     status              VARCHAR(20)     NOT NULL,
     additions           INTEGER         NOT NULL DEFAULT 0,
     deletions           INTEGER         NOT NULL DEFAULT 0,
