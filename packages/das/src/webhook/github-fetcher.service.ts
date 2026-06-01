@@ -28,6 +28,9 @@ interface ClosingIssueReference {
 // Files larger than this are stored with null content (AST parsing is wasteful past this).
 const MAX_FILE_SIZE_BYTES = 1_000_000;
 
+// GitHub's "List pull request files" REST endpoint returns at most 3,000 files.
+const GITHUB_PR_FILES_LIMIT = 3_000;
+
 // Starting batch size for batched GraphQL file-content requests. Halves on failure.
 const GRAPHQL_FILES_BATCH_SIZE = 50;
 
@@ -501,6 +504,20 @@ export class GitHubFetcherService implements OnModuleInit {
       throw new Error(`PR ${repoFullName}#${prNumber} not found in DB`);
     }
 
+    const changedFileCount = await this.fetchPrChangedFileCount(
+      owner,
+      repo,
+      prNumber,
+      token,
+    );
+    if (changedFileCount > GITHUB_PR_FILES_LIMIT) {
+      await this.markPrScoringDataIncomplete(repoFullName, prNumber);
+      throw new Error(
+        `PR ${repoFullName}#${prNumber} changes ${changedFileCount} files; ` +
+          `GitHub PR files endpoint is capped at ${GITHUB_PR_FILES_LIMIT}, so scoring data would be incomplete`,
+      );
+    }
+
     // Fetch and store the merge-base SHA. Needed for correct tree-diff
     // scoring — differs from baseSha when base branch has advanced. Recompute
     // on every fetch: a stored value can go stale when head advances via
@@ -519,7 +536,20 @@ export class GitHubFetcherService implements OnModuleInit {
     }
 
     // 1. Fetch file list via REST
-    const files = await this.fetchAllPrFiles(owner, repo, prNumber, token);
+    const files = await this.fetchAllPrFiles(
+      owner,
+      repo,
+      prNumber,
+      token,
+      changedFileCount,
+    );
+    if (files.length !== changedFileCount) {
+      await this.markPrScoringDataIncomplete(repoFullName, prNumber);
+      throw new Error(
+        `PR ${repoFullName}#${prNumber} file count mismatch: ` +
+          `GitHub reports ${changedFileCount} changed files but returned ${files.length}`,
+      );
+    }
 
     // Clear any stale data for this PR (e.g. after a synchronize event)
     await this.prFileRepo.delete({ repoFullName, prNumber });
@@ -566,12 +596,57 @@ export class GitHubFetcherService implements OnModuleInit {
     );
   }
 
+  private async fetchPrChangedFileCount(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    token: string,
+  ): Promise<number> {
+    const res = await this.githubFetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+        },
+      },
+    );
+
+    if (!res.ok) {
+      throw new Error(
+        `Failed to fetch PR changed file count: ${res.status} ${await res.text()}`,
+      );
+    }
+
+    const body: any = await res.json();
+    if (typeof body.changed_files !== "number") {
+      throw new Error(
+        `GitHub PR response for ${owner}/${repo}#${prNumber} did not include changed_files`,
+      );
+    }
+
+    return body.changed_files;
+  }
+
+  private async markPrScoringDataIncomplete(
+    repoFullName: string,
+    prNumber: number,
+  ): Promise<void> {
+    await this.prRepo.update(
+      { repoFullName, prNumber },
+      { scoringDataStored: false },
+    );
+  }
+
   private async fetchAllPrFiles(
     owner: string,
     repo: string,
     prNumber: number,
     token: string,
+    expectedFileCount: number,
   ): Promise<any[]> {
+    if (expectedFileCount === 0) return [];
+
     const maxAttempts = 3;
     let perPage = 100;
     let attempt = 0;
@@ -609,6 +684,7 @@ export class GitHubFetcherService implements OnModuleInit {
           const batch = await res.json();
           files.push(...batch);
 
+          if (files.length >= expectedFileCount) return files;
           if (batch.length < perPage) return files;
           page++;
         }
