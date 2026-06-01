@@ -2,7 +2,7 @@
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { In, Not, Repository } from "typeorm";
 import { readFileSync } from "fs";
 import { sign } from "jsonwebtoken";
 import {
@@ -521,10 +521,6 @@ export class GitHubFetcherService implements OnModuleInit {
     // 1. Fetch file list via REST
     const files = await this.fetchAllPrFiles(owner, repo, prNumber, token);
 
-    // Clear any stale data for this PR (e.g. after a synchronize event)
-    await this.prFileRepo.delete({ repoFullName, prNumber });
-    await this.prFileContentRepo.delete({ repoFullName, prNumber });
-
     // 2. Upsert file metadata
     for (const file of files) {
       await this.prFileRepo.upsert(
@@ -564,6 +560,31 @@ export class GitHubFetcherService implements OnModuleInit {
       pr.headSha,
       baseForContents,
     );
+
+    // 4. Prune rows for files that are no longer part of the PR (e.g. after a
+    // synchronize/force-push removed them). Done last and scoped to stale
+    // filenames only: the metadata/content writes above are upserts keyed on
+    // (repo_full_name, pr_number, filename), so current files are refreshed in
+    // place. Pruning here — rather than deleting everything up front — means a
+    // failure during the fetch above leaves the previously stored data intact
+    // instead of wiping it before the refresh can complete.
+    const currentFilenames = files.map((f) => f.filename);
+    if (currentFilenames.length > 0) {
+      await this.prFileRepo.delete({
+        repoFullName,
+        prNumber,
+        filename: Not(In(currentFilenames)),
+      });
+      await this.prFileContentRepo.delete({
+        repoFullName,
+        prNumber,
+        filename: Not(In(currentFilenames)),
+      });
+    } else {
+      // PR reports no files: remove anything previously stored for it.
+      await this.prFileRepo.delete({ repoFullName, prNumber });
+      await this.prFileContentRepo.delete({ repoFullName, prNumber });
+    }
   }
 
   private async fetchAllPrFiles(
