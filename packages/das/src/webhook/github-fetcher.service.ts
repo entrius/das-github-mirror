@@ -843,18 +843,6 @@ export class GitHubFetcherService implements OnModuleInit {
               deletions
               commits { totalCount }
               labels(first: 10) { nodes { name } }
-              reviews(first: 10) {
-                nodes {
-                  submittedAt
-                  state
-                  authorAssociation
-                  author {
-                    login
-                    ... on User { databaseId }
-                    ... on Bot { databaseId }
-                  }
-                }
-              }
               timelineItems(
                 itemTypes: [LABELED_EVENT, UNLABELED_EVENT]
                 first: 30
@@ -972,23 +960,13 @@ export class GitHubFetcherService implements OnModuleInit {
           ["repoFullName", "prNumber"],
         );
 
-        // Upsert reviews captured in the same query
-        const reviewNodes = pr.reviews?.nodes ?? [];
-        for (const review of reviewNodes) {
-          if (!review?.submittedAt || !review?.author?.databaseId) continue;
-          await this.reviewRepo.upsert(
-            {
-              repoFullName,
-              prNumber: pr.number,
-              reviewerGithubId: String(review.author.databaseId),
-              reviewerLogin: review.author.login ?? null,
-              reviewerAssociation: review.authorAssociation ?? null,
-              reviewState: review.state,
-              submittedAt: review.submittedAt,
-            },
-            ["repoFullName", "prNumber", "reviewerGithubId", "submittedAt"],
-          );
-        }
+        await this.fetchAndStorePrReviews(
+          repoFullName,
+          owner,
+          repo,
+          pr.number,
+          token,
+        );
 
         // Upsert label events (LABELED_EVENT / UNLABELED_EVENT)
         await this.saveLabelTimelineEvents(
@@ -1010,6 +988,101 @@ export class GitHubFetcherService implements OnModuleInit {
     }
 
     return prs;
+  }
+
+  private async fetchAndStorePrReviews(
+    repoFullName: string,
+    owner: string,
+    repo: string,
+    prNumber: number,
+    token: string,
+  ): Promise<void> {
+    const query = `
+      query(
+        $owner: String!,
+        $repo: String!,
+        $pr: Int!,
+        $cursor: String
+      ) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $pr) {
+            reviews(first: 100, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                submittedAt
+                state
+                authorAssociation
+                author {
+                  login
+                  ... on User { databaseId }
+                  ... on Bot { databaseId }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    let cursor: string | null = null;
+
+    while (true) {
+      const res: Response = await this.githubFetch(
+        "https://api.github.com/graphql",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            query,
+            variables: { owner, repo, pr: prNumber, cursor },
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        throw new Error(
+          `Backfill PR reviews GraphQL failed: ${res.status} ${await res.text()}`,
+        );
+      }
+
+      const body: any = await res.json();
+      this.assertNoGraphQLErrors(body, "Backfill PR reviews fetch");
+
+      const reviews: any = body.data?.repository?.pullRequest?.reviews ?? null;
+      if (!reviews) {
+        throw new Error(
+          `Backfill PR reviews GraphQL returned no reviews page for ${repoFullName}#${prNumber}`,
+        );
+      }
+
+      const reviewNodes = reviews.nodes ?? [];
+      for (const review of reviewNodes) {
+        if (!review?.submittedAt || !review?.author?.databaseId) continue;
+        await this.reviewRepo.upsert(
+          {
+            repoFullName,
+            prNumber,
+            reviewerGithubId: String(review.author.databaseId),
+            reviewerLogin: review.author.login ?? null,
+            reviewerAssociation: review.authorAssociation ?? null,
+            reviewState: review.state,
+            submittedAt: review.submittedAt,
+          },
+          ["repoFullName", "prNumber", "reviewerGithubId", "submittedAt"],
+        );
+      }
+
+      if (!reviews.pageInfo?.hasNextPage) break;
+      cursor = reviews.pageInfo.endCursor ?? null;
+      if (!cursor) {
+        throw new Error(
+          `Backfill PR reviews GraphQL had hasNextPage without endCursor for ${repoFullName}#${prNumber}`,
+        );
+      }
+    }
   }
 
   /**
