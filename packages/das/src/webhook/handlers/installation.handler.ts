@@ -49,7 +49,7 @@ export class InstallationHandler {
           installationId: String(installationId),
           addedAt: new Date().toISOString(),
         })
-        .orUpdate(["installationId"], ["repoFullName"])
+        .orUpdate(["installation_id"], ["repo_full_name"])
         .execute();
       this.logger.log(`Tracking repo: ${repo.full_name}`);
     }
