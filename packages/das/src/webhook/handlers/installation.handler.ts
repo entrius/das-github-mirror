@@ -26,7 +26,7 @@ export class InstallationHandler {
         .createQueryBuilder()
         .update()
         .set({ installationId: null, registered: false })
-        .where("installationId = :id", { id: String(installationId) })
+        .where("installation_id = :id", { id: String(installationId) })
         .execute();
       return;
     }
@@ -49,7 +49,7 @@ export class InstallationHandler {
           installationId: String(installationId),
           addedAt: new Date().toISOString(),
         })
-        .orUpdate(["installationId"], ["repoFullName"])
+        .orUpdate(["installation_id"], ["repo_full_name"])
         .execute();
       this.logger.log(`Tracking repo: ${repo.full_name}`);
     }
