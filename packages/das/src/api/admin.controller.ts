@@ -14,6 +14,7 @@ import { ApiTags, ApiOperation, ApiSecurity, ApiBody } from "@nestjs/swagger";
 import { RequireApiKeyGuard } from "./require-api-key.guard";
 import { Repo } from "../entities";
 import { FETCH_QUEUE, FETCH_JOBS } from "../queue/constants";
+import { validateRepoFullName } from "../utils/repo-full-name";
 
 interface BackfillBody {
   repoFullName: string;
@@ -22,18 +23,6 @@ interface BackfillBody {
 
 interface RegisterBody {
   repoFullName: string;
-}
-
-// GitHub owner/repo pattern: alphanum + `.`, `_`, `-`, length reasonable.
-const REPO_FULL_NAME_PATTERN = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
-
-function validateRepoFullName(value: unknown): string {
-  if (typeof value !== "string" || !REPO_FULL_NAME_PATTERN.test(value)) {
-    throw new BadRequestException(
-      'repoFullName must match "owner/repo" (alphanumerics, dot, dash, underscore)',
-    );
-  }
-  return value;
 }
 
 function validateDays(value: unknown): number | undefined {
