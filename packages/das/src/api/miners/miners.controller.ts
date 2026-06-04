@@ -15,6 +15,7 @@ import {
   ApiTags,
 } from "@nestjs/swagger";
 import { MinersService } from "./miners.service";
+import { ReviewsService } from "./reviews.service";
 
 // GitHub owner/repo pattern: alphanum + `.`, `_`, `-`, reasonable length.
 const REPO_FULL_NAME_PATTERN = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
@@ -104,7 +105,10 @@ const SINCE_BY_REPO_API_BODY = {
 @ApiTags("Miners")
 @Controller("api/v1/miners")
 export class MinersController {
-  constructor(private readonly miners: MinersService) {}
+  constructor(
+    private readonly miners: MinersService,
+    private readonly reviews: ReviewsService,
+  ) {}
 
   @Get(":githubId/pulls")
   @ApiOperation({
@@ -192,5 +196,48 @@ export class MinersController {
   ): Promise<unknown> {
     const { repoNames, sinceValues } = parseSinceByRepo(body);
     return this.miners.getIssuesByRepo(githubId, repoNames, sinceValues);
+  }
+
+  @Get(":githubId/reviews")
+  @ApiOperation({
+    summary: "Pull request reviews submitted by a miner",
+    description:
+      "Returns the reviews the miner has submitted on other contributors' " +
+      "PRs since the given date — the review side of contribution scoring. " +
+      "One row per (repo, PR): the reviewer's latest effective review state, " +
+      "a review_count of how many reviews they left on that PR, the PR's " +
+      "author/state/size for weighting, and an is_self_review flag. Defaults " +
+      "to 35 days ago (midnight UTC) when `since` is omitted.",
+  })
+  @ApiParam({ name: "githubId", description: "GitHub user ID (numeric)" })
+  @ApiQuery({
+    name: "since",
+    required: false,
+    description:
+      "ISO timestamp. Defaults to 35 days ago (midnight UTC) if omitted.",
+  })
+  async getReviews(
+    @Param("githubId") githubId: string,
+    @Query("since") since?: string,
+  ): Promise<unknown> {
+    return this.reviews.getReviews(githubId, MinersService.resolveSince(since));
+  }
+
+  @Post(":githubId/reviews")
+  @ApiOperation({
+    summary: "Pull request reviews submitted by a miner, windowed per repository",
+    description:
+      "Same response shape as GET /reviews, but each repository is filtered " +
+      "to its own `since` from the request body instead of one shared " +
+      "window. Only repositories named in the map are returned.",
+  })
+  @ApiParam({ name: "githubId", description: "GitHub user ID (numeric)" })
+  @ApiBody(SINCE_BY_REPO_API_BODY)
+  async postReviews(
+    @Param("githubId") githubId: string,
+    @Body() body: SinceByRepoBody,
+  ): Promise<unknown> {
+    const { repoNames, sinceValues } = parseSinceByRepo(body);
+    return this.reviews.getReviewsByRepo(githubId, repoNames, sinceValues);
   }
 }

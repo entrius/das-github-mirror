@@ -17,6 +17,7 @@ import { DashboardController } from "./dashboard/dashboard.controller";
 import { DashboardService } from "./dashboard/dashboard.service";
 import { MinersController } from "./miners/miners.controller";
 import { MinersService } from "./miners/miners.service";
+import { ReviewsService } from "./miners/reviews.service";
 import { PullsController } from "./pulls/pulls.controller";
 import { PullsService } from "./pulls/pulls.service";
 import { ReposController } from "./repos/repos.controller";
@@ -45,6 +46,7 @@ import { ReposService } from "./repos/repos.service";
   providers: [
     DashboardService,
     MinersService,
+    ReviewsService,
     PullsService,
     ReposService,
     RequireApiKeyGuard,
