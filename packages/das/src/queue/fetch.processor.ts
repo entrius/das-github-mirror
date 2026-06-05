@@ -1,14 +1,16 @@
 import { Processor, WorkerHost, InjectQueue } from "@nestjs/bullmq";
-import { Logger } from "@nestjs/common";
+import { Logger, OnModuleInit } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { IsNull, Repository } from "typeorm";
 import { Job, Queue } from "bullmq";
 import { Issue, PullRequest } from "../entities";
 import { GitHubFetcherService } from "../webhook/github-fetcher.service";
+import { RepoReconcilerService } from "../webhook/repo-reconciler.service";
 import {
   FETCH_QUEUE,
   FETCH_JOBS,
   DEFAULT_BACKFILL_DAYS,
+  RECONCILE_CRON,
   prFilesJobId,
 } from "./constants";
 
@@ -46,11 +48,12 @@ type JobData =
   | IssueClosureJobData;
 
 @Processor(FETCH_QUEUE, { concurrency: 5 })
-export class FetchProcessor extends WorkerHost {
+export class FetchProcessor extends WorkerHost implements OnModuleInit {
   private readonly logger = new Logger(FetchProcessor.name);
 
   constructor(
     private readonly fetcher: GitHubFetcherService,
+    private readonly reconciler: RepoReconcilerService,
     @InjectRepository(PullRequest)
     private readonly prRepo: Repository<PullRequest>,
     @InjectRepository(Issue)
@@ -59,6 +62,23 @@ export class FetchProcessor extends WorkerHost {
     private readonly fetchQueue: Queue,
   ) {
     super();
+  }
+
+  /**
+   * Register the repeatable repo-reconcile job. BullMQ dedupes by repeat key,
+   * so calling this on every boot updates the single schedule rather than
+   * stacking duplicates across restarts.
+   */
+  async onModuleInit(): Promise<void> {
+    await this.fetchQueue.add(
+      FETCH_JOBS.RECONCILE_REPOS,
+      {},
+      {
+        repeat: { pattern: RECONCILE_CRON },
+        removeOnComplete: true,
+        removeOnFail: true,
+      },
+    );
   }
 
   async process(job: Job<JobData>): Promise<void> {
@@ -80,6 +100,10 @@ export class FetchProcessor extends WorkerHost {
       case FETCH_JOBS.ISSUE_CLOSURE: {
         const { repoFullName, issueNumber } = job.data as IssueClosureJobData;
         await this.handleIssueClosure(repoFullName, issueNumber);
+        break;
+      }
+      case FETCH_JOBS.RECONCILE_REPOS: {
+        await this.reconciler.reconcile();
         break;
       }
       default:

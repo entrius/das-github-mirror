@@ -12,6 +12,7 @@ import {
   Review,
 } from "../entities";
 import { GitHubFetcherService } from "../webhook/github-fetcher.service";
+import { RepoReconcilerService } from "../webhook/repo-reconciler.service";
 import { FetchProcessor } from "./fetch.processor";
 import { FETCH_QUEUE } from "./constants";
 
@@ -38,7 +39,7 @@ import { FETCH_QUEUE } from "./constants";
       Review,
     ]),
   ],
-  providers: [FetchProcessor, GitHubFetcherService],
+  providers: [FetchProcessor, GitHubFetcherService, RepoReconcilerService],
   exports: [BullModule],
 })
 export class QueueModule {}
