@@ -102,32 +102,6 @@ export function encodeCursor(row: {
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
 
-/**
- * Keyset predicate for ORDER BY created_at DESC, repo_full_name DESC, number DESC.
- * Placeholders are $startIdx, $startIdx+1, $startIdx+2 (timestamptz, text, int).
- */
-export function keysetSql(
-  alias: string,
-  numberColumn: string,
-  startIdx: number,
-): string {
-  const created = `${alias}.created_at`;
-  const repo = `LOWER(${alias}.repo_full_name)`;
-  const num = `${alias}.${numberColumn}`;
-  const at = `$${startIdx}`;
-  const repoParam = `$${startIdx + 1}`;
-  const numParam = `$${startIdx + 2}`;
-  return `(
-    (${created} < ${at}::timestamptz)
-    OR (${created} = ${at}::timestamptz AND ${repo} < ${repoParam})
-    OR (${created} = ${at}::timestamptz AND ${repo} = ${repoParam} AND ${num} < ${numParam})
-  )`;
-}
-
-export function keysetParams(cursor: DecodedCursor): [string, string, number] {
-  return [cursor.createdAt, cursor.repoFullName, cursor.number];
-}
-
 export function buildPaginatedResponse<T extends Record<string, unknown>>(
   rows: T[],
   limit: number,

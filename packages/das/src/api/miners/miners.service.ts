@@ -1,12 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-assignment */
 import { Injectable } from "@nestjs/common";
 import { DataSource } from "typeorm";
-import {
-  buildPaginatedResponse,
-  keysetParams,
-  keysetSql,
-  PaginationParams,
-} from "./pagination";
+import { buildPaginatedResponse, PaginationParams } from "./pagination";
 
 const DEFAULT_SINCE_DAYS = 35;
 
@@ -188,45 +183,23 @@ export class MinersService {
     pull_requests: unknown[];
     next_cursor?: string | null;
   }> {
-    if (!pagination) {
-      const rows = await this.dataSource.query(
-        `
-        SELECT${PR_SELECT_COLUMNS}
-        FROM pull_requests p
-        LEFT JOIN pr_review_summary rs
-          ON rs.repo_full_name = p.repo_full_name
-         AND rs.pr_number      = p.pr_number
-        LEFT JOIN repos r
-          ON r.repo_full_name = p.repo_full_name
-        WHERE p.author_github_id = $1
-          AND (
-            (p.state = 'OPEN'   AND p.created_at >= $2)
-            OR (p.state = 'MERGED' AND p.merged_at >= $2)
-            OR (p.state = 'CLOSED' AND p.created_at >= $2)
-          )
-        ORDER BY p.created_at DESC
-        `,
-        [githubId, since],
-      );
-
-      return {
-        github_id: githubId,
-        since,
-        generated_at: new Date().toISOString(),
-        pull_requests: rows,
-      };
-    }
-
-    const { limit, cursor } = pagination;
-    const params: unknown[] = [githubId, since];
-    let keysetClause = "";
-    if (cursor) {
-      const startIdx = params.length + 1;
-      keysetClause = `AND ${keysetSql("p", "pr_number", startIdx)}`;
-      params.push(...keysetParams(cursor));
-    }
-    const limitIdx = params.length + 1;
-    params.push(limit + 1);
+    const cursor = pagination?.cursor ?? null;
+    const keysetClause = cursor
+      ? `AND (p.created_at, LOWER(p.repo_full_name), p.pr_number) < ($3::timestamptz, $4, $5::int)`
+      : "";
+    const limitClause = pagination ? `LIMIT $${cursor ? 6 : 3}` : "";
+    const params: unknown[] = !pagination
+      ? [githubId, since]
+      : cursor
+        ? [
+            githubId,
+            since,
+            cursor.createdAt,
+            cursor.repoFullName,
+            cursor.number,
+            pagination.limit + 1,
+          ]
+        : [githubId, since, pagination.limit + 1];
 
     const rows = await this.dataSource.query(
       `
@@ -245,14 +218,23 @@ export class MinersService {
         )
         ${keysetClause}
       ORDER BY p.created_at DESC, LOWER(p.repo_full_name) DESC, p.pr_number DESC
-      LIMIT $${limitIdx}
+      ${limitClause}
       `,
       params,
     );
 
+    if (!pagination) {
+      return {
+        github_id: githubId,
+        since,
+        generated_at: new Date().toISOString(),
+        pull_requests: rows,
+      };
+    }
+
     const page = buildPaginatedResponse(
       rows as Record<string, unknown>[],
-      limit,
+      pagination.limit,
       (row) => ({
         created_at: row.created_at as string,
         repo_full_name: row.repo_full_name as string,
@@ -329,39 +311,23 @@ export class MinersService {
     issues: unknown[];
     next_cursor?: string | null;
   }> {
-    if (!pagination) {
-      const rows = await this.dataSource.query(
-        `
-        SELECT${ISSUE_SELECT_COLUMNS}
-        FROM issues i
-        WHERE i.author_github_id = $1
-          AND (
-            (i.state = 'OPEN' AND ($2::timestamptz IS NULL OR i.created_at >= $2))
-            OR (i.state = 'CLOSED' AND i.closed_at >= $2)
-          )
-        ORDER BY i.created_at DESC
-        `,
-        [githubId, since],
-      );
-
-      return {
-        github_id: githubId,
-        since,
-        generated_at: new Date().toISOString(),
-        issues: rows,
-      };
-    }
-
-    const { limit, cursor } = pagination;
-    const params: unknown[] = [githubId, since];
-    let keysetClause = "";
-    if (cursor) {
-      const startIdx = params.length + 1;
-      keysetClause = `AND ${keysetSql("i", "issue_number", startIdx)}`;
-      params.push(...keysetParams(cursor));
-    }
-    const limitIdx = params.length + 1;
-    params.push(limit + 1);
+    const cursor = pagination?.cursor ?? null;
+    const keysetClause = cursor
+      ? `AND (i.created_at, LOWER(i.repo_full_name), i.issue_number) < ($3::timestamptz, $4, $5::int)`
+      : "";
+    const limitClause = pagination ? `LIMIT $${cursor ? 6 : 3}` : "";
+    const params: unknown[] = !pagination
+      ? [githubId, since]
+      : cursor
+        ? [
+            githubId,
+            since,
+            cursor.createdAt,
+            cursor.repoFullName,
+            cursor.number,
+            pagination.limit + 1,
+          ]
+        : [githubId, since, pagination.limit + 1];
 
     const rows = await this.dataSource.query(
       `
@@ -374,14 +340,23 @@ export class MinersService {
         )
         ${keysetClause}
       ORDER BY i.created_at DESC, LOWER(i.repo_full_name) DESC, i.issue_number DESC
-      LIMIT $${limitIdx}
+      ${limitClause}
       `,
       params,
     );
 
+    if (!pagination) {
+      return {
+        github_id: githubId,
+        since,
+        generated_at: new Date().toISOString(),
+        issues: rows,
+      };
+    }
+
     const page = buildPaginatedResponse(
       rows as Record<string, unknown>[],
-      limit,
+      pagination.limit,
       (row) => ({
         created_at: row.created_at as string,
         repo_full_name: row.repo_full_name as string,
