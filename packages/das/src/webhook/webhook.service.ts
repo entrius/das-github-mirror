@@ -116,7 +116,7 @@ export class WebhookService {
         await this.reviewCommentHandler.handle(payload);
         break;
       case "label":
-        // Repo-level label CRUD — not used for scoring, skip
+        await this.labelHandler.handleRepoLabel(payload);
         break;
       default:
         this.logger.debug(`Unhandled event type: ${event}`);
