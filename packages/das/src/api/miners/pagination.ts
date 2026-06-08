@@ -28,11 +28,10 @@ interface CursorPayload {
 export function parsePaginationQuery(
   limitRaw?: string,
   cursorRaw?: string,
-  defaultPaginationEnabled = false,
 ): PaginationParams | null {
   const hasLimit = limitRaw !== undefined && limitRaw !== "";
   const hasCursor = cursorRaw !== undefined && cursorRaw !== "";
-  if (!defaultPaginationEnabled && !hasLimit && !hasCursor) {
+  if (!hasLimit && !hasCursor) {
     return null;
   }
 

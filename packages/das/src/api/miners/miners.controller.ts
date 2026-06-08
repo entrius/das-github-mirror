@@ -14,7 +14,6 @@ import {
   ApiQuery,
   ApiTags,
 } from "@nestjs/swagger";
-import { ConfigService } from "@nestjs/config";
 import { MinersService } from "./miners.service";
 import { parsePaginationQuery } from "./pagination";
 
@@ -106,17 +105,7 @@ const SINCE_BY_REPO_API_BODY = {
 @ApiTags("Miners")
 @Controller("api/v1/miners")
 export class MinersController {
-  private readonly defaultPaginationEnabled: boolean;
-
-  constructor(
-    private readonly miners: MinersService,
-    config: ConfigService,
-  ) {
-    const raw = config.get<string>("MINERS_PAGINATION_ENABLED") ?? "";
-    this.defaultPaginationEnabled = ["1", "true", "yes", "on"].includes(
-      raw.toLowerCase(),
-    );
-  }
+  constructor(private readonly miners: MinersService) {}
 
   @Get(":githubId/pulls")
   @ApiOperation({
@@ -151,11 +140,7 @@ export class MinersController {
     @Query("cursor") cursor?: string,
     @Query("limit") limit?: string,
   ): Promise<unknown> {
-    const pagination = parsePaginationQuery(
-      limit,
-      cursor,
-      this.defaultPaginationEnabled,
-    );
+    const pagination = parsePaginationQuery(limit, cursor);
     return this.miners.getPullRequests(
       githubId,
       MinersService.resolveSince(since),
@@ -217,11 +202,7 @@ export class MinersController {
     @Query("cursor") cursor?: string,
     @Query("limit") limit?: string,
   ): Promise<unknown> {
-    const pagination = parsePaginationQuery(
-      limit,
-      cursor,
-      this.defaultPaginationEnabled,
-    );
+    const pagination = parsePaginationQuery(limit, cursor);
     return this.miners.getIssues(githubId, since ?? null, pagination);
   }
 
