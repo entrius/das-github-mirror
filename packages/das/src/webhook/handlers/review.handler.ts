@@ -20,6 +20,9 @@ export class ReviewHandler {
     // Only store submitted reviews (not pending/dismissed)
     if (payload.action !== "submitted") return;
 
+    // Mirror backfill guard: skip reviews without a reviewer id or timestamp.
+    if (!review?.user?.id || !review?.submitted_at) return;
+
     const data: Partial<Review> = {
       repoFullName,
       prNumber: payload.pull_request.number,
