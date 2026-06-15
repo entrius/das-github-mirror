@@ -5,6 +5,16 @@ import { buildPaginatedResponse, PaginationParams } from "./pagination";
 
 const DEFAULT_SINCE_DAYS = 35;
 
+const PR_ORDER_BY = `
+      ORDER BY
+        CASE p.state
+          WHEN 'MERGED' THEN p.merged_at
+          WHEN 'CLOSED' THEN p.closed_at
+          ELSE p.created_at
+        END DESC NULLS LAST,
+        LOWER(p.repo_full_name) DESC,
+        p.pr_number DESC`;
+
 // Column list (everything between SELECT and FROM) for the PR query. Shared by
 // the scalar-`since` GET path and the per-repo `since` POST path so the two
 // stay identical.
@@ -217,7 +227,7 @@ export class MinersService {
           OR (p.state = 'CLOSED' AND p.created_at >= $2)
         )
         ${keysetClause}
-      ORDER BY p.created_at DESC, LOWER(p.repo_full_name) DESC, p.pr_number DESC
+      ${PR_ORDER_BY}
       ${limitClause}
       `,
       params,
@@ -287,7 +297,7 @@ export class MinersService {
           OR (p.state = 'MERGED' AND p.merged_at >= w.since)
           OR (p.state = 'CLOSED' AND p.created_at >= w.since)
         )
-      ORDER BY p.created_at DESC
+      ${PR_ORDER_BY}
       `,
       [githubId, repoNames, sinceValues],
     );
