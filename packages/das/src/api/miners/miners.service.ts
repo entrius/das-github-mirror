@@ -214,7 +214,7 @@ export class MinersService {
         AND (
           (p.state = 'OPEN'   AND p.created_at >= $2)
           OR (p.state = 'MERGED' AND p.merged_at >= $2)
-          OR (p.state = 'CLOSED' AND p.created_at >= $2)
+          OR (p.state = 'CLOSED' AND p.closed_at >= $2)
         )
         ${keysetClause}
       ORDER BY p.created_at DESC, LOWER(p.repo_full_name) DESC, p.pr_number DESC
@@ -285,7 +285,7 @@ export class MinersService {
         AND (
           (p.state = 'OPEN'   AND p.created_at >= w.since)
           OR (p.state = 'MERGED' AND p.merged_at >= w.since)
-          OR (p.state = 'CLOSED' AND p.created_at >= w.since)
+          OR (p.state = 'CLOSED' AND p.closed_at >= w.since)
         )
       ORDER BY p.created_at DESC
       `,
