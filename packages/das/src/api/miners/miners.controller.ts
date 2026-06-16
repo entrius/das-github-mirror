@@ -158,12 +158,31 @@ export class MinersController {
   })
   @ApiParam({ name: "githubId", description: "GitHub user ID (numeric)" })
   @ApiBody(SINCE_BY_REPO_API_BODY)
+  @ApiQuery({
+    name: "cursor",
+    required: false,
+    description:
+      "Opaque pagination cursor from a previous response's next_cursor field.",
+  })
+  @ApiQuery({
+    name: "limit",
+    required: false,
+    description: "Page size (default 50, max 200).",
+  })
   async postPullRequests(
     @Param("githubId") githubId: string,
     @Body() body: SinceByRepoBody,
+    @Query("cursor") cursor?: string,
+    @Query("limit") limit?: string,
   ): Promise<unknown> {
     const { repoNames, sinceValues } = parseSinceByRepo(body);
-    return this.miners.getPullRequestsByRepo(githubId, repoNames, sinceValues);
+    const pagination = parsePaginationQuery(limit, cursor);
+    return this.miners.getPullRequestsByRepo(
+      githubId,
+      repoNames,
+      sinceValues,
+      pagination,
+    );
   }
 
   @Get(":githubId/issues")
@@ -216,11 +235,30 @@ export class MinersController {
   })
   @ApiParam({ name: "githubId", description: "GitHub user ID (numeric)" })
   @ApiBody(SINCE_BY_REPO_API_BODY)
+  @ApiQuery({
+    name: "cursor",
+    required: false,
+    description:
+      "Opaque pagination cursor from a previous response's next_cursor field.",
+  })
+  @ApiQuery({
+    name: "limit",
+    required: false,
+    description: "Page size (default 50, max 200).",
+  })
   async postIssues(
     @Param("githubId") githubId: string,
     @Body() body: SinceByRepoBody,
+    @Query("cursor") cursor?: string,
+    @Query("limit") limit?: string,
   ): Promise<unknown> {
     const { repoNames, sinceValues } = parseSinceByRepo(body);
-    return this.miners.getIssuesByRepo(githubId, repoNames, sinceValues);
+    const pagination = parsePaginationQuery(limit, cursor);
+    return this.miners.getIssuesByRepo(
+      githubId,
+      repoNames,
+      sinceValues,
+      pagination,
+    );
   }
 }
