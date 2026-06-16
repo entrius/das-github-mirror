@@ -16,18 +16,18 @@ export class ReposService {
   }> {
     const repoFullName = `${owner}/${repo}`;
 
-    // The association literals must stay in sync with gittensor
-    // constants.py MAINTAINER_ASSOCIATIONS.
+    // Reads the live maintainers table (direct collaborators + org members),
+    // populated by MaintainerPopulateService. Every row is already a maintainer
+    // (OWNER/MEMBER/COLLABORATOR), so no association filter is needed.
     const rows = await this.dataSource.query(
       `
       SELECT
-        cr.author_github_id   AS github_id,
-        cr.author_login       AS login,
-        cr.author_association AS association
-      FROM contributor_repo_roles cr
-      WHERE LOWER(cr.repo_full_name) = LOWER($1)
-        AND cr.author_association IN ('OWNER', 'MEMBER', 'COLLABORATOR')
-      ORDER BY cr.author_github_id
+        m.github_id   AS github_id,
+        m.login       AS login,
+        m.association AS association
+      FROM maintainers m
+      WHERE m.repo_full_name = LOWER($1)
+      ORDER BY m.github_id
       `,
       [repoFullName],
     );

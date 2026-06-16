@@ -1404,9 +1404,9 @@ export class GitHubFetcherService implements OnModuleInit {
    * Insert LABELED_EVENT / UNLABELED_EVENT timeline nodes into label_events.
    * Idempotent: relies on the uq_label_events_natural_key UNIQUE index so
    * re-running backfill (or BullMQ retries) collapses to a no-op for events
-   * already written. Actor role is resolved at read time via
-   * contributor_repo_roles using stored PR/issue, review, and comment
-   * association evidence; GraphQL's actor type doesn't expose authorAssociation.
+   * already written. Actor role is resolved at read time against the live
+   * maintainers table (see pr_labels_by_actor view); GraphQL's actor type
+   * doesn't expose authorAssociation.
    */
   private async saveLabelTimelineEvents(
     repoFullName: string,
