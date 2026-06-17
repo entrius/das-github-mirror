@@ -16,7 +16,7 @@ const PR_SELECT_COLUMNS = `
         p.state,
         p.author_github_id,
         COALESCE(p.author_login, '')    AS author_login,
-        p.author_association,
+        COALESCE(m_author.association, p.author_association) AS author_association,
         p.created_at,
         p.closed_at,
         p.merged_at,
@@ -96,7 +96,7 @@ const ISSUE_SELECT_COLUMNS = `
         i.state_reason,
         i.author_github_id,
         i.author_login,
-        i.author_association,
+        COALESCE(m_author.association, i.author_association) AS author_association,
         i.created_at,
         i.closed_at,
         i.updated_at,
@@ -210,6 +210,9 @@ export class MinersService {
        AND rs.pr_number      = p.pr_number
       LEFT JOIN repos r
         ON r.repo_full_name = p.repo_full_name
+      LEFT JOIN maintainers m_author
+        ON m_author.github_id = p.author_github_id
+       AND m_author.repo_full_name = LOWER(p.repo_full_name)
       WHERE p.author_github_id = $1
         AND (
           (p.state = 'OPEN'   AND p.created_at >= $2)
@@ -302,6 +305,9 @@ export class MinersService {
        AND rs.pr_number      = p.pr_number
       LEFT JOIN repos r
         ON r.repo_full_name = p.repo_full_name
+      LEFT JOIN maintainers m_author
+        ON m_author.github_id = p.author_github_id
+       AND m_author.repo_full_name = LOWER(p.repo_full_name)
       WHERE p.author_github_id = $1
         AND (
           (p.state = 'OPEN'   AND p.created_at >= w.since)
@@ -376,6 +382,9 @@ export class MinersService {
       `
       SELECT${ISSUE_SELECT_COLUMNS}
       FROM issues i
+      LEFT JOIN maintainers m_author
+        ON m_author.github_id = i.author_github_id
+       AND m_author.repo_full_name = LOWER(i.repo_full_name)
       WHERE i.author_github_id = $1
         AND (
           (i.state = 'OPEN' AND ($2::timestamptz IS NULL OR i.created_at >= $2))
@@ -462,6 +471,9 @@ export class MinersService {
       FROM issues i
       JOIN windows w
         ON w.repo_full_name = LOWER(i.repo_full_name)
+      LEFT JOIN maintainers m_author
+        ON m_author.github_id = i.author_github_id
+       AND m_author.repo_full_name = LOWER(i.repo_full_name)
       WHERE i.author_github_id = $1
         AND (
           (i.state = 'OPEN' AND i.created_at >= w.since)

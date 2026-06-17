@@ -11,10 +11,10 @@ export class ReposController {
   @ApiOperation({
     summary: "Maintainer-role contributors for a repo",
     description:
-      "Returns users whose latest known GitHub association for the repo " +
-      "is OWNER, MEMBER, or COLLABORATOR, synthesized from PR/issue/" +
-      "review/comment activity (contributor_repo_roles view). An unknown " +
-      "repo returns an empty maintainers list, not a 404.",
+      "Returns users whose live GitHub association for the repo is OWNER, " +
+      "MEMBER, or COLLABORATOR, from the maintainers table (direct " +
+      "collaborators + org members, refreshed hourly). An unknown repo " +
+      "returns an empty maintainers list, not a 404.",
   })
   @ApiParam({ name: "owner", description: "Repository owner (org or user)" })
   @ApiParam({ name: "repo", description: "Repository name" })
