@@ -28,6 +28,8 @@ export class CommentHandler {
       return;
     }
 
+    if (!comment.user?.id || !comment.created_at) return;
+
     // Determine context: PR thread or issue thread
     const commentContext = payload.issue?.pull_request ? "pr" : "issue";
 
