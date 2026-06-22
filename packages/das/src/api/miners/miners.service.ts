@@ -5,6 +5,40 @@ import { buildPaginatedResponse, PaginationParams } from "./pagination";
 
 const DEFAULT_SINCE_DAYS = 35;
 
+// Timestamp used for ordering and keyset pagination: merged_at / closed_at /
+// created_at depending on PR state (#186).
+const PR_SORT_AT = `CASE p.state
+          WHEN 'MERGED' THEN p.merged_at
+          WHEN 'CLOSED' THEN p.closed_at
+          ELSE p.created_at
+        END`;
+
+const PR_ORDER_BY = `
+      ORDER BY ${PR_SORT_AT} DESC NULLS LAST,
+        LOWER(p.repo_full_name) DESC,
+        p.pr_number DESC`;
+
+const PR_SINCE_WINDOW = `
+          (p.state = 'OPEN'   AND p.created_at >= $2)
+          OR (p.state = 'MERGED' AND p.merged_at >= $2)
+          OR (p.state = 'CLOSED' AND p.closed_at >= $2)`;
+
+const PR_SINCE_WINDOW_BY_REPO = `
+          (p.state = 'OPEN'   AND p.created_at >= w.since)
+          OR (p.state = 'MERGED' AND p.merged_at >= w.since)
+          OR (p.state = 'CLOSED' AND p.closed_at >= w.since)`;
+
+function prSortAtFromRow(row: Record<string, unknown>): string {
+  const state = row.state as string;
+  if (state === "MERGED" && row.merged_at != null) {
+    return String(row.merged_at);
+  }
+  if (state === "CLOSED" && row.closed_at != null) {
+    return String(row.closed_at);
+  }
+  return String(row.created_at);
+}
+
 // Column list (everything between SELECT and FROM) for the PR query. Shared by
 // the scalar-`since` GET path and the per-repo `since` POST path so the two
 // stay identical.
@@ -185,7 +219,7 @@ export class MinersService {
   }> {
     const cursor = pagination?.cursor ?? null;
     const keysetClause = cursor
-      ? `AND (p.created_at, LOWER(p.repo_full_name), p.pr_number) < ($3::timestamptz, $4, $5::int)`
+      ? `AND (${PR_SORT_AT}, LOWER(p.repo_full_name), p.pr_number) < ($3::timestamptz, $4, $5::int)`
       : "";
     const limitClause = pagination ? `LIMIT $${cursor ? 6 : 3}` : "";
     const params: unknown[] = !pagination
@@ -215,12 +249,10 @@ export class MinersService {
        AND m_author.repo_full_name = LOWER(p.repo_full_name)
       WHERE p.author_github_id = $1
         AND (
-          (p.state = 'OPEN'   AND p.created_at >= $2)
-          OR (p.state = 'MERGED' AND p.merged_at >= $2)
-          OR (p.state = 'CLOSED' AND p.created_at >= $2)
+          ${PR_SINCE_WINDOW}
         )
         ${keysetClause}
-      ORDER BY p.created_at DESC, LOWER(p.repo_full_name) DESC, p.pr_number DESC
+      ${PR_ORDER_BY}
       ${limitClause}
       `,
       params,
@@ -239,7 +271,7 @@ export class MinersService {
       rows as Record<string, unknown>[],
       pagination.limit,
       (row) => ({
-        created_at: row.created_at as string,
+        created_at: prSortAtFromRow(row),
         repo_full_name: row.repo_full_name as string,
         pr_number: row.pr_number as number,
       }),
@@ -274,7 +306,7 @@ export class MinersService {
   }> {
     const cursor = pagination?.cursor ?? null;
     const keysetClause = cursor
-      ? `AND (p.created_at, LOWER(p.repo_full_name), p.pr_number) < ($4::timestamptz, $5, $6::int)`
+      ? `AND (${PR_SORT_AT}, LOWER(p.repo_full_name), p.pr_number) < ($4::timestamptz, $5, $6::int)`
       : "";
     const limitClause = pagination ? `LIMIT $${cursor ? 7 : 4}` : "";
     const params: unknown[] = !pagination
@@ -310,12 +342,10 @@ export class MinersService {
        AND m_author.repo_full_name = LOWER(p.repo_full_name)
       WHERE p.author_github_id = $1
         AND (
-          (p.state = 'OPEN'   AND p.created_at >= w.since)
-          OR (p.state = 'MERGED' AND p.merged_at >= w.since)
-          OR (p.state = 'CLOSED' AND p.created_at >= w.since)
+          ${PR_SINCE_WINDOW_BY_REPO}
         )
         ${keysetClause}
-      ORDER BY p.created_at DESC, LOWER(p.repo_full_name) DESC, p.pr_number DESC
+      ${PR_ORDER_BY}
       ${limitClause}
       `,
       params,
@@ -334,7 +364,7 @@ export class MinersService {
       rows as Record<string, unknown>[],
       pagination.limit,
       (row) => ({
-        created_at: row.created_at as string,
+        created_at: prSortAtFromRow(row),
         repo_full_name: row.repo_full_name as string,
         pr_number: row.pr_number as number,
       }),
