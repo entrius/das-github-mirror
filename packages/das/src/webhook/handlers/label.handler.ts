@@ -1,8 +1,19 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-explicit-any */
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, Repository } from "typeorm";
+import { Repository } from "typeorm";
 import { LabelEvent, Issue, PullRequest } from "../../entities";
+
+type RepoLabelTargetType = "pr" | "issue";
+
+type CurrentRepoLabelTarget = {
+  repoFullName: string;
+  targetNumber: number | null;
+  targetType: RepoLabelTargetType;
+  action: string;
+  actorGithubId: string | null;
+  actorLogin: string | null;
+};
 
 @Injectable()
 export class LabelHandler {
@@ -13,7 +24,6 @@ export class LabelHandler {
     private readonly issueRepo: Repository<Issue>,
     @InjectRepository(PullRequest)
     private readonly prRepo: Repository<PullRequest>,
-    private readonly dataSource: DataSource,
   ) {}
 
   /**
@@ -125,80 +135,44 @@ export class LabelHandler {
     actorLogin: string | null,
     timestamp: string,
   ): Promise<void> {
-    await this.dataSource.transaction(async (manager) => {
-      await manager.query(
-        `
-        WITH latest_events AS (
-          SELECT DISTINCT ON (
-              le.repo_full_name,
-              le.target_number,
-              le.target_type,
-              le.label_name
-            )
-            le.repo_full_name,
-            le.target_number,
-            le.target_type,
-            le.action
-          FROM label_events le
-          WHERE le.repo_full_name = $1
-            AND le.label_name = $2
-            AND le.target_type IN ('pr', 'issue')
-          ORDER BY
-            le.repo_full_name,
-            le.target_number,
-            le.target_type,
-            le.label_name,
-            le.timestamp DESC
-        ),
-        current_targets AS (
-          SELECT repo_full_name, target_number, target_type
-          FROM latest_events
-          WHERE action = 'labeled'
-        )
-        INSERT INTO label_events (
-          repo_full_name,
-          target_number,
-          target_type,
-          label_name,
-          action,
-          actor_github_id,
-          actor_login,
-          timestamp
-        )
-        SELECT
-          repo_full_name,
-          target_number,
-          target_type,
-          $2::varchar,
-          'unlabeled',
-          $3::varchar,
-          $4::varchar,
-          $5::timestamptz
-        FROM current_targets
-        ON CONFLICT DO NOTHING
-        `,
-        [repoFullName, labelName, actorGithubId, actorLogin, timestamp],
+    await this.labelEventRepo.manager.transaction(async (manager) => {
+      const labelEventRepo = manager.getRepository(LabelEvent);
+      const currentTargets = await this.findCurrentRepoLabelTargets(
+        labelEventRepo,
+        repoFullName,
+        labelName,
       );
 
-      await manager.query(
-        `
-        UPDATE pull_requests
-        SET labels = array_remove(labels, $2)
-        WHERE repo_full_name = $1
-          AND $2 = ANY(labels)
-        `,
-        [repoFullName, labelName],
-      );
+      const transitionRows = currentTargets.map((target) => ({
+        repoFullName: target.repoFullName,
+        targetNumber: target.targetNumber,
+        targetType: target.targetType,
+        labelName,
+        action: "unlabeled",
+        actorGithubId,
+        actorLogin,
+        timestamp,
+      }));
 
-      await manager.query(
-        `
-        UPDATE issues
-        SET labels = array_remove(labels, $2)
-        WHERE repo_full_name = $1
-          AND $2 = ANY(labels)
-        `,
-        [repoFullName, labelName],
-      );
+      await this.insertLabelEvents(labelEventRepo, transitionRows);
+
+      await manager
+        .getRepository(PullRequest)
+        .createQueryBuilder()
+        .update()
+        .set({ labels: () => "array_remove(labels, :labelName)" })
+        .where("repo_full_name = :repoFullName", { repoFullName })
+        .andWhere(":labelName = ANY(labels)", { labelName })
+        .execute();
+
+      await manager
+        .getRepository(Issue)
+        .createQueryBuilder()
+        .update()
+        .set({ labels: () => "array_remove(labels, :labelName)" })
+        .where("repo_full_name = :repoFullName", { repoFullName })
+        .andWhere(":labelName = ANY(labels)", { labelName })
+        .execute();
     });
   }
 
@@ -210,118 +184,112 @@ export class LabelHandler {
     actorLogin: string | null,
     timestamp: string,
   ): Promise<void> {
-    await this.dataSource.transaction(async (manager) => {
-      await manager.query(
-        `
-        WITH latest_events AS (
-          SELECT DISTINCT ON (
-              le.repo_full_name,
-              le.target_number,
-              le.target_type,
-              le.label_name
-            )
-            le.repo_full_name,
-            le.target_number,
-            le.target_type,
-            le.action,
-            le.actor_github_id,
-            le.actor_login
-          FROM label_events le
-          WHERE le.repo_full_name = $1
-            AND le.label_name = $2
-            AND le.target_type IN ('pr', 'issue')
-          ORDER BY
-            le.repo_full_name,
-            le.target_number,
-            le.target_type,
-            le.label_name,
-            le.timestamp DESC
-        ),
-        current_targets AS (
-          SELECT
-            repo_full_name,
-            target_number,
-            target_type,
-            actor_github_id,
-            actor_login
-          FROM latest_events
-          WHERE action = 'labeled'
-        ),
-        transition_rows AS (
-          SELECT
-            repo_full_name,
-            target_number,
-            target_type,
-            $2::varchar AS label_name,
-            'unlabeled'::varchar AS action,
-            $4::varchar AS actor_github_id,
-            $5::varchar AS actor_login,
-            $6::timestamptz AS timestamp
-          FROM current_targets
-
-          UNION ALL
-
-          SELECT
-            repo_full_name,
-            target_number,
-            target_type,
-            $3::varchar AS label_name,
-            'labeled'::varchar AS action,
-            actor_github_id,
-            actor_login,
-            $6::timestamptz AS timestamp
-          FROM current_targets
-        )
-        INSERT INTO label_events (
-          repo_full_name,
-          target_number,
-          target_type,
-          label_name,
-          action,
-          actor_github_id,
-          actor_login,
-          timestamp
-        )
-        SELECT
-          repo_full_name,
-          target_number,
-          target_type,
-          label_name,
-          action,
-          actor_github_id,
-          actor_login,
-          timestamp
-        FROM transition_rows
-        ON CONFLICT DO NOTHING
-        `,
-        [repoFullName, oldName, newName, actorGithubId, actorLogin, timestamp],
+    await this.labelEventRepo.manager.transaction(async (manager) => {
+      const labelEventRepo = manager.getRepository(LabelEvent);
+      const currentTargets = await this.findCurrentRepoLabelTargets(
+        labelEventRepo,
+        repoFullName,
+        oldName,
       );
 
-      await manager.query(
-        `
-        UPDATE pull_requests
-        SET labels = CASE
-          WHEN $3 = ANY(labels) THEN array_remove(labels, $2)
-          ELSE array_replace(labels, $2, $3)
-        END
-        WHERE repo_full_name = $1
-          AND $2 = ANY(labels)
-        `,
-        [repoFullName, oldName, newName],
-      );
+      const transitionRows = currentTargets.flatMap((target) => [
+        {
+          repoFullName: target.repoFullName,
+          targetNumber: target.targetNumber,
+          targetType: target.targetType,
+          labelName: oldName,
+          action: "unlabeled",
+          actorGithubId,
+          actorLogin,
+          timestamp,
+        },
+        {
+          repoFullName: target.repoFullName,
+          targetNumber: target.targetNumber,
+          targetType: target.targetType,
+          labelName: newName,
+          action: "labeled",
+          actorGithubId: target.actorGithubId,
+          actorLogin: target.actorLogin,
+          timestamp,
+        },
+      ]);
 
-      await manager.query(
-        `
-        UPDATE issues
-        SET labels = CASE
-          WHEN $3 = ANY(labels) THEN array_remove(labels, $2)
-          ELSE array_replace(labels, $2, $3)
-        END
-        WHERE repo_full_name = $1
-          AND $2 = ANY(labels)
-        `,
-        [repoFullName, oldName, newName],
-      );
+      await this.insertLabelEvents(labelEventRepo, transitionRows);
+
+      await manager
+        .getRepository(PullRequest)
+        .createQueryBuilder()
+        .update()
+        .set({
+          labels: () =>
+            "CASE WHEN :newName = ANY(labels) THEN array_remove(labels, :oldName) ELSE array_replace(labels, :oldName, :newName) END",
+        })
+        .where("repo_full_name = :repoFullName", { repoFullName })
+        .andWhere(":oldName = ANY(labels)", { oldName })
+        .setParameters({ newName })
+        .execute();
+
+      await manager
+        .getRepository(Issue)
+        .createQueryBuilder()
+        .update()
+        .set({
+          labels: () =>
+            "CASE WHEN :newName = ANY(labels) THEN array_remove(labels, :oldName) ELSE array_replace(labels, :oldName, :newName) END",
+        })
+        .where("repo_full_name = :repoFullName", { repoFullName })
+        .andWhere(":oldName = ANY(labels)", { oldName })
+        .setParameters({ newName })
+        .execute();
     });
+  }
+
+  private async findCurrentRepoLabelTargets(
+    labelEventRepo: Repository<LabelEvent>,
+    repoFullName: string,
+    labelName: string,
+  ): Promise<CurrentRepoLabelTarget[]> {
+    const latestTargets = await labelEventRepo
+      .createQueryBuilder("le")
+      .select("le.repoFullName", "repoFullName")
+      .addSelect("le.targetNumber", "targetNumber")
+      .addSelect("le.targetType", "targetType")
+      .addSelect("le.action", "action")
+      .addSelect("le.actorGithubId", "actorGithubId")
+      .addSelect("le.actorLogin", "actorLogin")
+      .distinctOn([
+        "le.repoFullName",
+        "le.targetNumber",
+        "le.targetType",
+        "le.labelName",
+      ])
+      .where("le.repoFullName = :repoFullName", { repoFullName })
+      .andWhere("le.labelName = :labelName", { labelName })
+      .andWhere("le.targetType IN (:...targetTypes)", {
+        targetTypes: ["pr", "issue"],
+      })
+      .orderBy("le.repoFullName", "ASC")
+      .addOrderBy("le.targetNumber", "ASC")
+      .addOrderBy("le.targetType", "ASC")
+      .addOrderBy("le.labelName", "ASC")
+      .addOrderBy("le.timestamp", "DESC")
+      .getRawMany<CurrentRepoLabelTarget>();
+
+    return latestTargets.filter((target) => target.action === "labeled");
+  }
+
+  private async insertLabelEvents(
+    labelEventRepo: Repository<LabelEvent>,
+    labelEvents: Partial<LabelEvent>[],
+  ): Promise<void> {
+    if (labelEvents.length === 0) return;
+
+    await labelEventRepo
+      .createQueryBuilder()
+      .insert()
+      .values(labelEvents)
+      .orIgnore()
+      .execute();
   }
 }
