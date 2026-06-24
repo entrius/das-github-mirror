@@ -47,9 +47,7 @@ type JobData =
   | BackfillRepoJobData
   | IssueClosureJobData;
 
-// 4 not 5: fewer parallel GraphQL calls keeps us further under GitHub's
-// per-minute secondary rate limit (jobs share a per-installation point budget).
-@Processor(FETCH_QUEUE, { concurrency: 4 })
+@Processor(FETCH_QUEUE, { concurrency: 5 })
 export class FetchProcessor extends WorkerHost {
   private readonly logger = new Logger(FetchProcessor.name);
 
