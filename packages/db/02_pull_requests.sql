@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     created_at              TIMESTAMPTZ       NOT NULL,
     closed_at               TIMESTAMPTZ,
     merged_at               TIMESTAMPTZ,
+    updated_at              TIMESTAMPTZ,
     last_edited_at          TIMESTAMPTZ,
     merged_by_login         VARCHAR(255),
     base_ref                VARCHAR(255),
@@ -31,6 +32,12 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     CONSTRAINT pull_requests_merged_has_merged_at
         CHECK (state != 'MERGED' OR merged_at IS NOT NULL)
 );
+
+-- Backfill for existing deployments: GitHub's pull request updated_at, used by
+-- the nightly incremental backfill to skip re-fetching PR metadata that hasn't
+-- changed since last stored. Null on historic rows is treated as "unknown" and
+-- forces a re-fetch (fail-safe), so no UPDATE is needed.
+ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_pull_requests_author      ON pull_requests(author_github_id);
 CREATE INDEX IF NOT EXISTS idx_pull_requests_state       ON pull_requests(state);

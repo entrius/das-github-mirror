@@ -35,6 +35,9 @@ export class PullRequest {
   @Column({ name: "merged_at", type: "timestamptz", nullable: true })
   mergedAt: string;
 
+  @Column({ name: "updated_at", type: "timestamptz", nullable: true })
+  updatedAt: string | null;
+
   @Column({ name: "last_edited_at", type: "timestamptz", nullable: true })
   lastEditedAt: string | null;
 

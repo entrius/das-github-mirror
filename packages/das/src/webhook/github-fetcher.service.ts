@@ -14,6 +14,14 @@ import {
   Repo,
   Review,
 } from "../entities";
+import {
+  GitHubRateLimitError,
+  isGraphQLRateLimit,
+} from "./github-rate-limit.error";
+import {
+  needsContentRefresh,
+  needsMetadataRefresh,
+} from "./incremental-backfill";
 
 interface InstallationToken {
   token: string;
@@ -161,8 +169,23 @@ export class GitHubFetcherService implements OnModuleInit {
     return 60_000;
   }
 
-  private assertNoGraphQLErrors(body: any, context: string): void {
+  private assertNoGraphQLErrors(
+    body: any,
+    context: string,
+    res: Response,
+  ): void {
     if (!body?.errors) return;
+
+    // GraphQL rate limits arrive as HTTP 200 with the error in the body (unlike
+    // REST's 403/429), so they bypass githubFetch's status-based handling.
+    // Surface them as a typed error the queue processor can defer on, instead
+    // of a generic throw that burns the job's retry attempts.
+    if (isGraphQLRateLimit(body.errors)) {
+      throw new GitHubRateLimitError(
+        `${context} rate limited: ${JSON.stringify(body.errors)}`,
+        this.computeRetryAfterMs(res),
+      );
+    }
 
     throw new Error(
       `${context} GraphQL errors: ${JSON.stringify(body.errors)}`,
@@ -440,7 +463,7 @@ export class GitHubFetcherService implements OnModuleInit {
     }
 
     const body: any = await res.json();
-    this.assertNoGraphQLErrors(body, "PR metadata fetch");
+    this.assertNoGraphQLErrors(body, "PR metadata fetch", res);
 
     const pr = body.data?.repository?.pullRequest;
     if (!pr) {
@@ -556,7 +579,7 @@ export class GitHubFetcherService implements OnModuleInit {
     }
 
     const body: any = await res.json();
-    this.assertNoGraphQLErrors(body, "Issue closure fetch");
+    this.assertNoGraphQLErrors(body, "Issue closure fetch", res);
 
     const issue = body.data?.repository?.issue;
     if (!issue) return null;
@@ -866,6 +889,10 @@ export class GitHubFetcherService implements OnModuleInit {
         );
         i += batch.length;
       } catch (err) {
+        // A rate limit isn't a too-big-batch problem — halving just spams more
+        // doomed requests at an exhausted budget. Let it propagate so the queue
+        // processor defers the whole job until the budget resets.
+        if (err instanceof GitHubRateLimitError) throw err;
         if (batchSize > minBatchSize) {
           const newSize = Math.max(Math.floor(batchSize / 2), minBatchSize);
           this.logger.warn(
@@ -940,7 +967,7 @@ export class GitHubFetcherService implements OnModuleInit {
     }
 
     const body: any = await res.json();
-    this.assertNoGraphQLErrors(body, "Content fetch");
+    this.assertNoGraphQLErrors(body, "Content fetch", res);
 
     const repoData = body.data?.repository ?? {};
 
@@ -997,12 +1024,32 @@ export class GitHubFetcherService implements OnModuleInit {
    * Page through GraphQL for PRs in a repo created within the last N days.
    * Upserts each PR. Returns the list of PR numbers so the caller can
    * enqueue follow-up fetch jobs for diffs + closing issues.
+   *
+   * The backfill is a safety net behind real-time webhook ingestion, so for
+   * each PR we compare the freshly-fetched values against the PRE-upsert stored
+   * row and return per-PR gating flags so the caller re-fetches only what
+   * actually changed (see #incremental-backfill):
+   *   - needsFilesJob:    the PR_FILES content fetch (REST file list + merge-base
+   *     + batched GraphQL content) is fully determined by head+base SHA. Skip it
+   *     only when the stored row already has its content (scoringDataStored) AND
+   *     both SHAs are unchanged.
+   *   - needsMetadataJob: the PR_METADATA fetch (closing-issue links, body, state,
+   *     merged/closed timestamps) is gated on GitHub's pull request updatedAt,
+   *     which bumps on edits, state changes, merges, closes and link changes.
+   * Both flags fail safe toward re-fetching: a new PR, a missing stored value,
+   * or any uncertainty forces the job to be enqueued.
    */
   async backfillPullRequests(
     repoFullName: string,
     sinceDate: Date,
   ): Promise<
-    { prNumber: number; headSha: string | null; baseSha: string | null }[]
+    {
+      prNumber: number;
+      headSha: string | null;
+      baseSha: string | null;
+      needsFilesJob: boolean;
+      needsMetadataJob: boolean;
+    }[]
   > {
     const [owner, repo] = repoFullName.split("/");
     const token = await this.getTokenForRepo(repoFullName);
@@ -1025,6 +1072,7 @@ export class GitHubFetcherService implements OnModuleInit {
               createdAt
               closedAt
               mergedAt
+              updatedAt
               lastEditedAt
               merged
               author {
@@ -1089,6 +1137,8 @@ export class GitHubFetcherService implements OnModuleInit {
       prNumber: number;
       headSha: string | null;
       baseSha: string | null;
+      needsFilesJob: boolean;
+      needsMetadataJob: boolean;
     }[] = [];
     let cursor: string | null = null;
     let defaultBranchWritten = false;
@@ -1116,7 +1166,7 @@ export class GitHubFetcherService implements OnModuleInit {
       }
 
       const body: any = await res.json();
-      this.assertNoGraphQLErrors(body, "Backfill PR fetch");
+      this.assertNoGraphQLErrors(body, "Backfill PR fetch", res);
 
       const repoData: any = body.data?.repository;
       const page: any = repoData?.pullRequests;
@@ -1142,6 +1192,26 @@ export class GitHubFetcherService implements OnModuleInit {
           break;
         }
 
+        const headSha: string | null = pr.headRefOid ?? null;
+        const baseSha: string | null = pr.baseRefOid ?? null;
+        const updatedAt: string | null = pr.updatedAt ?? null;
+
+        // Capture the PRE-upsert stored row: the upsert below overwrites it, so
+        // the change-detection must read the old values first. A missing row
+        // (new PR) leaves `existing` undefined and forces both jobs.
+        const existing = await this.prRepo.findOne({
+          where: { repoFullName, prNumber: pr.number },
+          select: {
+            headSha: true,
+            baseSha: true,
+            updatedAt: true,
+            scoringDataStored: true,
+          },
+        });
+
+        const needsFilesJob = needsContentRefresh(existing, headSha, baseSha);
+        const needsMetadataJob = needsMetadataRefresh(existing, updatedAt);
+
         await this.prRepo.upsert(
           {
             repoFullName,
@@ -1155,13 +1225,16 @@ export class GitHubFetcherService implements OnModuleInit {
             createdAt: pr.createdAt,
             closedAt: pr.closedAt ?? null,
             mergedAt: pr.mergedAt ?? null,
+            updatedAt,
             lastEditedAt: pr.lastEditedAt ?? null,
             mergedByLogin: pr.mergedBy?.login ?? null,
             baseRef: pr.baseRef?.name ?? null,
             headRef: pr.headRef?.name ?? null,
             headRepoFullName: pr.headRepository?.nameWithOwner ?? null,
-            headSha: pr.headRefOid ?? null,
-            baseSha: pr.baseRefOid ?? null,
+            // head/base SHA columns are nullable in the DB but typed non-null
+            // on the entity; null is a valid stored value (e.g. deleted head).
+            headSha: headSha as string,
+            baseSha: baseSha as string,
             additions: pr.additions ?? null,
             deletions: pr.deletions ?? null,
             commitsCount: pr.commits?.totalCount ?? null,
@@ -1200,8 +1273,10 @@ export class GitHubFetcherService implements OnModuleInit {
 
         prs.push({
           prNumber: pr.number,
-          headSha: pr.headRefOid ?? null,
-          baseSha: pr.baseRefOid ?? null,
+          headSha,
+          baseSha,
+          needsFilesJob,
+          needsMetadataJob,
         });
       }
 
@@ -1214,9 +1289,10 @@ export class GitHubFetcherService implements OnModuleInit {
 
   /**
    * Page through GraphQL for issues in a repo created within the last N days.
-   * Upserts each issue.
+   * Upserts each issue. Returns the number of issues processed (for the
+   * backfill summary log).
    */
-  async backfillIssues(repoFullName: string, sinceDate: Date): Promise<void> {
+  async backfillIssues(repoFullName: string, sinceDate: Date): Promise<number> {
     const [owner, repo] = repoFullName.split("/");
     const token = await this.getTokenForRepo(repoFullName);
 
@@ -1307,6 +1383,7 @@ export class GitHubFetcherService implements OnModuleInit {
     `;
 
     let cursor: string | null = null;
+    let issueCount = 0;
 
     while (true) {
       const res: Response = await this.githubFetch(
@@ -1331,7 +1408,7 @@ export class GitHubFetcherService implements OnModuleInit {
       }
 
       const body: any = await res.json();
-      this.assertNoGraphQLErrors(body, "Backfill issue fetch");
+      this.assertNoGraphQLErrors(body, "Backfill issue fetch", res);
 
       const page: any = body.data?.repository?.issues;
       if (!page) {
@@ -1393,11 +1470,15 @@ export class GitHubFetcherService implements OnModuleInit {
           "issue",
           issue.timelineItems?.nodes ?? [],
         );
+
+        issueCount += 1;
       }
 
       if (shouldStop || !page.pageInfo.hasNextPage) break;
       cursor = page.pageInfo.endCursor;
     }
+
+    return issueCount;
   }
 
   /**
