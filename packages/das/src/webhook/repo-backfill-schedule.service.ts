@@ -18,14 +18,10 @@ import {
 // Heavier than the reconcile sweep (re-touches every PR in the window), so it
 // runs daily and can be disabled on critical infra via env.
 const BACKFILL_ENABLED = process.env.NIGHTLY_BACKFILL_ENABLED !== "false";
-// Anchor to a fixed wall clock, not boot. A boot-anchored `setInterval(24h)`
-// re-pins the nightly to whatever time the process last restarted, so every
-// redeploy silently moves the window. A cron expression fires at the same real
-// time regardless of boot, and `timeZone` handles the CST/CDT shift so it stays
-// at local midnight year-round. Default: 12:10am America/Chicago (the :10 keeps
-// it off the top of the hour, preserving the prior 00:10 stagger).
-const BACKFILL_CRON = process.env.NIGHTLY_BACKFILL_CRON ?? "10 0 * * *";
-const BACKFILL_TZ = process.env.NIGHTLY_BACKFILL_TZ ?? "America/Chicago";
+// 12:10am America/Chicago. Anchored to the wall clock (not boot) so redeploys
+// don't move the window; timeZone keeps it at local midnight across CST/CDT.
+const BACKFILL_CRON = "10 0 * * *";
+const BACKFILL_TZ = "America/Chicago";
 const BACKFILL_DAYS = Number(
   process.env.NIGHTLY_BACKFILL_DAYS ?? DEFAULT_BACKFILL_DAYS,
 );
@@ -53,10 +49,8 @@ export class RepoBackfillScheduleService implements OnModuleInit {
     );
   }
 
-  // Fires on the fixed wall clock above. Unlike the reconcile sweep, it does
-  // not run at startup — a deploy already implies fresh data, and this is the
-  // heavy job. The static per-repo jobId in backfillAll dedupes a tick that
-  // lands while the prior night's run is still draining.
+  // No run-at-startup (a deploy already implies fresh data, and this is heavy);
+  // the static per-repo jobId dedupes a tick that overlaps a draining run.
   @Cron(BACKFILL_CRON, { name: "nightly-backfill", timeZone: BACKFILL_TZ })
   private async backfillAll(): Promise<void> {
     if (!BACKFILL_ENABLED) return;
