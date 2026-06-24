@@ -1,9 +1,5 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
+import { Cron } from "@nestjs/schedule";
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
@@ -22,19 +18,21 @@ import {
 // Heavier than the reconcile sweep (re-touches every PR in the window), so it
 // runs daily and can be disabled on critical infra via env.
 const BACKFILL_ENABLED = process.env.NIGHTLY_BACKFILL_ENABLED !== "false";
-const BACKFILL_INTERVAL_MS = Number(
-  process.env.NIGHTLY_BACKFILL_INTERVAL_MS ?? 24 * 60 * 60 * 1000, // daily
-);
+// Anchor to a fixed wall clock, not boot. A boot-anchored `setInterval(24h)`
+// re-pins the nightly to whatever time the process last restarted, so every
+// redeploy silently moves the window. A cron expression fires at the same real
+// time regardless of boot, and `timeZone` handles the CST/CDT shift so it stays
+// at local midnight year-round. Default: 12:10am America/Chicago (the :10 keeps
+// it off the top of the hour, preserving the prior 00:10 stagger).
+const BACKFILL_CRON = process.env.NIGHTLY_BACKFILL_CRON ?? "10 0 * * *";
+const BACKFILL_TZ = process.env.NIGHTLY_BACKFILL_TZ ?? "America/Chicago";
 const BACKFILL_DAYS = Number(
   process.env.NIGHTLY_BACKFILL_DAYS ?? DEFAULT_BACKFILL_DAYS,
 );
 
 @Injectable()
-export class RepoBackfillScheduleService
-  implements OnModuleInit, OnModuleDestroy
-{
+export class RepoBackfillScheduleService implements OnModuleInit {
   private readonly logger = new Logger(RepoBackfillScheduleService.name);
-  private timer: NodeJS.Timeout | null = null;
 
   constructor(
     @InjectRepository(Repo)
@@ -50,19 +48,18 @@ export class RepoBackfillScheduleService
       );
       return;
     }
-    // Unlike the reconcile sweep, don't run at startup — a deploy already
-    // implies fresh data, and this is the heavy job. Start on the interval.
-    this.timer = setInterval(
-      () => void this.backfillAll(),
-      BACKFILL_INTERVAL_MS,
+    this.logger.log(
+      `Nightly repo backfill scheduled '${BACKFILL_CRON}' (${BACKFILL_TZ})`,
     );
   }
 
-  onModuleDestroy(): void {
-    if (this.timer) clearInterval(this.timer);
-  }
-
+  // Fires on the fixed wall clock above. Unlike the reconcile sweep, it does
+  // not run at startup — a deploy already implies fresh data, and this is the
+  // heavy job. The static per-repo jobId in backfillAll dedupes a tick that
+  // lands while the prior night's run is still draining.
+  @Cron(BACKFILL_CRON, { name: "nightly-backfill", timeZone: BACKFILL_TZ })
   private async backfillAll(): Promise<void> {
+    if (!BACKFILL_ENABLED) return;
     try {
       const repos = await this.repoRepo.find({
         where: { registered: true },
