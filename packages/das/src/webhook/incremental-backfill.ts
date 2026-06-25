@@ -5,7 +5,8 @@
 export interface StoredPrState {
   headSha: string | null;
   baseSha: string | null;
-  updatedAt: string | null;
+  // Date from TypeORM (timestamptz), string in tests.
+  updatedAt: Date | string | null;
   scoringDataStored: boolean;
 }
 
@@ -23,16 +24,20 @@ export function needsContentRefresh(
   );
 }
 
-// updatedAt bumps on edits, state changes, merges, closes and link changes, so
-// skip the PR_METADATA fetch only when it matches the stored value.
+// Normalise a Date or ISO string to an epoch-ms instant; null if unparseable.
+function toEpochMs(value: Date | string | null): number | null {
+  if (value == null) return null;
+  const ms =
+    value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+// Skip the PR_METADATA fetch only when GitHub's updatedAt instant is unchanged.
 export function needsMetadataRefresh(
   stored: StoredPrState | null | undefined,
   updatedAt: string | null,
 ): boolean {
-  return !(
-    stored != null &&
-    stored.updatedAt != null &&
-    updatedAt != null &&
-    stored.updatedAt === updatedAt
-  );
+  const storedMs = stored ? toEpochMs(stored.updatedAt) : null;
+  const incomingMs = toEpochMs(updatedAt);
+  return !(storedMs != null && incomingMs != null && storedMs === incomingMs);
 }
