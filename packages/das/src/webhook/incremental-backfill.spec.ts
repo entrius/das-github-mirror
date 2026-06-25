@@ -69,4 +69,43 @@ describe("needsMetadataRefresh", () => {
   it("re-fetches when GitHub returned a null updatedAt", () => {
     expect(needsMetadataRefresh(stored(), null)).toBe(true);
   });
+
+  // Production reality: TypeORM hydrates the `timestamptz` column into a Date,
+  // while GitHub sends an ISO string. A raw `===` never matched, so the gate
+  // re-fetched every PR forever. These lock in the instant-based comparison.
+  it("skips when a hydrated Date equals GitHub's ISO string (same instant)", () => {
+    expect(
+      needsMetadataRefresh(
+        stored({ updatedAt: new Date("2026-06-01T00:00:00Z") }),
+        "2026-06-01T00:00:00Z",
+      ),
+    ).toBe(false);
+  });
+
+  it("skips across timezone-equivalent representations of the same instant", () => {
+    expect(
+      needsMetadataRefresh(
+        stored({ updatedAt: new Date("2026-06-01T00:00:00Z") }),
+        "2026-05-31T19:00:00-05:00",
+      ),
+    ).toBe(false);
+  });
+
+  it("re-fetches when a hydrated Date is a different instant", () => {
+    expect(
+      needsMetadataRefresh(
+        stored({ updatedAt: new Date("2026-06-01T00:00:00Z") }),
+        "2026-06-02T00:00:00Z",
+      ),
+    ).toBe(true);
+  });
+
+  it("re-fetches (fails safe) on an unparseable stored value", () => {
+    expect(
+      needsMetadataRefresh(
+        stored({ updatedAt: "not-a-date" }),
+        "2026-06-01T00:00:00Z",
+      ),
+    ).toBe(true);
+  });
 });
