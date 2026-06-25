@@ -35,9 +35,7 @@ export class PullRequest {
   @Column({ name: "merged_at", type: "timestamptz", nullable: true })
   mergedAt: string;
 
-  // Written as a GitHub ISO string on upsert, but TypeORM hydrates a
-  // `timestamptz` back into a Date on read — hence the union. The incremental
-  // backfill's needsMetadataRefresh normalises both before comparing.
+  // ISO string on write, Date on read (TypeORM hydrates timestamptz).
   @Column({ name: "updated_at", type: "timestamptz", nullable: true })
   updatedAt: Date | string | null;
 

@@ -70,9 +70,7 @@ describe("needsMetadataRefresh", () => {
     expect(needsMetadataRefresh(stored(), null)).toBe(true);
   });
 
-  // Production reality: TypeORM hydrates the `timestamptz` column into a Date,
-  // while GitHub sends an ISO string. A raw `===` never matched, so the gate
-  // re-fetched every PR forever. These lock in the instant-based comparison.
+  // Stored side is a hydrated Date, incoming is GitHub's ISO string.
   it("skips when a hydrated Date equals GitHub's ISO string (same instant)", () => {
     expect(
       needsMetadataRefresh(

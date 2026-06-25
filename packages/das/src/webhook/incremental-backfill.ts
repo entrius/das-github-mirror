@@ -5,9 +5,7 @@
 export interface StoredPrState {
   headSha: string | null;
   baseSha: string | null;
-  // Read back from a `timestamptz` column, so at runtime TypeORM hydrates this
-  // into a Date even though the entity annotates it as a string; tests pass
-  // ISO strings. needsMetadataRefresh normalises both shapes before comparing.
+  // Date from TypeORM (timestamptz), string in tests.
   updatedAt: Date | string | null;
   scoringDataStored: boolean;
 }
@@ -26,12 +24,7 @@ export function needsContentRefresh(
   );
 }
 
-// Normalise either a Date (what TypeORM hydrates a `timestamptz` column into)
-// or an ISO string (what the GitHub GraphQL API returns, and what tests pass)
-// to an epoch-ms instant. Returns null for null/unparseable input so callers
-// fail safe. Comparing raw values directly would never match: a Date is never
-// `===` a string, and even the DB's text form (`2026-06-01 00:00:00+00`)
-// differs from GitHub's ISO form (`2026-06-01T00:00:00Z`).
+// Normalise a Date or ISO string to an epoch-ms instant; null if unparseable.
 function toEpochMs(value: Date | string | null): number | null {
   if (value == null) return null;
   const ms =
@@ -39,10 +32,7 @@ function toEpochMs(value: Date | string | null): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-// updatedAt bumps on edits, state changes, merges, closes and link changes, so
-// skip the PR_METADATA fetch only when it matches the stored value. Compare by
-// instant, not raw value: the stored side round-trips through a timestamptz
-// column (hydrated as a Date), the incoming side is GitHub's ISO string.
+// Skip the PR_METADATA fetch only when GitHub's updatedAt instant is unchanged.
 export function needsMetadataRefresh(
   stored: StoredPrState | null | undefined,
   updatedAt: string | null,
