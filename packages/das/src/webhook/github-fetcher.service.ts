@@ -252,10 +252,15 @@ export class GitHubFetcherService implements OnModuleInit {
   // --- REST: live maintainer roles (collaborators + org members) ---
 
   /**
-   * Direct collaborators on the repo, returned as COLLABORATOR. The reconciler
-   * upgrades org members to MEMBER and the repo owner to OWNER. affiliation=direct
-   * excludes access inherited purely through org base permissions, so this is
-   * the set of users explicitly granted access to the repo.
+   * Collaborators on the repo, returned as COLLABORATOR. The reconciler upgrades
+   * org members to MEMBER and the repo owner to OWNER. We use affiliation=all (not
+   * =direct) so access granted via a team or org base permission is included, not
+   * just users explicitly added to the repo. This is deliberate: the live
+   * maintainers table must reproduce GitHub's author_association (OWNER / MEMBER /
+   * COLLABORATOR), which marks any org insider with repo access as a maintainer
+   * regardless of how that access was granted. affiliation=direct missed
+   * team/base-permission insiders, so org-owned repos whose members are private
+   * (the GitHub default) resolved to an empty maintainer set and were skipped.
    */
   async fetchRepoCollaborators(
     repoFullName: string,
@@ -263,7 +268,7 @@ export class GitHubFetcherService implements OnModuleInit {
     const token = await this.getTokenForRepo(repoFullName);
     const [owner, repo] = repoFullName.split("/");
     const users = await this.restGetAllPages(
-      `https://api.github.com/repos/${owner}/${repo}/collaborators?affiliation=direct&per_page=100`,
+      `https://api.github.com/repos/${owner}/${repo}/collaborators?affiliation=all&per_page=100`,
       token,
     );
     return users.map((u: any) => ({
