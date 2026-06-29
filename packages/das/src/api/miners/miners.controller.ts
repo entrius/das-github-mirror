@@ -14,6 +14,7 @@ import {
   ApiQuery,
   ApiTags,
 } from "@nestjs/swagger";
+import { NoCache } from "../../cache";
 import { MinersService } from "./miners.service";
 import { parsePaginationQuery } from "./pagination";
 
@@ -108,6 +109,7 @@ export class MinersController {
   constructor(private readonly miners: MinersService) {}
 
   @Get(":githubId/pulls")
+  @NoCache()
   @ApiOperation({
     summary: "Pull requests authored by a miner",
     description:
@@ -186,6 +188,7 @@ export class MinersController {
   }
 
   @Get(":githubId/issues")
+  @NoCache()
   @ApiOperation({
     summary: "Issues authored by a miner",
     description:
