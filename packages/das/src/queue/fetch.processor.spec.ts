@@ -25,6 +25,94 @@ function metadataJob(): Job {
   } as unknown as Job;
 }
 
+function makeIssueClosureProcessor(
+  overrides: {
+    issue?: { state: string } | null;
+    solvedByPr?: number | null;
+    updateAffected?: number;
+  } = {},
+): {
+  processor: FetchProcessor;
+  fetchIssueClosingPr: jest.Mock;
+  issueUpdate: jest.Mock;
+} {
+  const fetchIssueClosingPr = jest
+    .fn()
+    .mockResolvedValue(overrides.solvedByPr ?? 42);
+  const issueUpdate = jest
+    .fn()
+    .mockResolvedValue({ affected: overrides.updateAffected ?? 1 });
+  const fetcher = { fetchIssueClosingPr } as any;
+  const issueRepo = {
+    findOneBy: jest.fn().mockResolvedValue(overrides.issue ?? { state: "CLOSED" }),
+    update: issueUpdate,
+  } as any;
+  const processor = new FetchProcessor(
+    fetcher,
+    {} as any,
+    issueRepo,
+    {} as any,
+  );
+  return { processor, fetchIssueClosingPr, issueUpdate };
+}
+
+describe("FetchProcessor ISSUE_CLOSURE", () => {
+  beforeEach(() => {
+    jest.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "debug").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it("writes solved_by_pr only when the issue is still CLOSED after the fetch", async () => {
+    const { processor, fetchIssueClosingPr, issueUpdate } =
+      makeIssueClosureProcessor({ solvedByPr: 99 });
+
+    await processor.process({
+      name: FETCH_JOBS.ISSUE_CLOSURE,
+      data: { repoFullName: "acme/repo", issueNumber: 7 },
+    } as Job);
+
+    expect(fetchIssueClosingPr).toHaveBeenCalledWith("acme/repo", 7);
+    expect(issueUpdate).toHaveBeenCalledWith(
+      { repoFullName: "acme/repo", issueNumber: 7, state: "CLOSED" },
+      { solvedByPr: 99 },
+    );
+  });
+
+  it("does not overwrite solved_by_pr when the issue was reopened during fetch", async () => {
+    const { processor, fetchIssueClosingPr, issueUpdate } =
+      makeIssueClosureProcessor({ updateAffected: 0 });
+
+    await processor.process({
+      name: FETCH_JOBS.ISSUE_CLOSURE,
+      data: { repoFullName: "acme/repo", issueNumber: 7 },
+    } as Job);
+
+    expect(fetchIssueClosingPr).toHaveBeenCalled();
+    expect(issueUpdate).toHaveBeenCalledWith(
+      { repoFullName: "acme/repo", issueNumber: 7, state: "CLOSED" },
+      { solvedByPr: 42 },
+    );
+  });
+
+  it("skips fetch and clears solved_by_pr when the issue is already OPEN", async () => {
+    const { processor, fetchIssueClosingPr, issueUpdate } =
+      makeIssueClosureProcessor({ issue: { state: "OPEN" } });
+
+    await processor.process({
+      name: FETCH_JOBS.ISSUE_CLOSURE,
+      data: { repoFullName: "acme/repo", issueNumber: 7 },
+    } as Job);
+
+    expect(fetchIssueClosingPr).not.toHaveBeenCalled();
+    expect(issueUpdate).toHaveBeenCalledWith(
+      { repoFullName: "acme/repo", issueNumber: 7 },
+      { solvedByPr: null },
+    );
+  });
+});
+
 describe("FetchProcessor rate-limit deferral", () => {
   beforeEach(() => {
     // Silence handler/deferral logging noise during the run.

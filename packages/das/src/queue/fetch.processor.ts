@@ -136,7 +136,18 @@ export class FetchProcessor extends WorkerHost {
       issueNumber,
     );
 
-    await this.issueRepo.update({ repoFullName, issueNumber }, { solvedByPr });
+    // Re-check state atomically: a reopen webhook may have landed while the
+    // GraphQL fetch was in flight (#ISSUE_CLOSURE race).
+    const updateResult = await this.issueRepo.update(
+      { repoFullName, issueNumber, state: "CLOSED" },
+      { solvedByPr },
+    );
+    if (!updateResult.affected) {
+      this.logger.debug(
+        `Skipping solved_by_pr write for ${repoFullName}#${issueNumber}: ` +
+          `issue no longer closed`,
+      );
+    }
   }
 
   private async handlePrMetadata(
