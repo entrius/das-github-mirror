@@ -1,5 +1,6 @@
 import { Controller, Get, Param } from "@nestjs/common";
 import { ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
+import { NoCache } from "../../cache";
 import { ReposService } from "./repos.service";
 
 @ApiTags("Repos")
@@ -8,6 +9,7 @@ export class ReposController {
   constructor(private readonly repos: ReposService) {}
 
   @Get(":owner/:repo/maintainers")
+  @NoCache()
   @ApiOperation({
     summary: "Maintainer-role contributors for a repo",
     description:

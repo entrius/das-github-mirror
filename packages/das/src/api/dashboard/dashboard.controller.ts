@@ -1,5 +1,6 @@
 import { BadRequestException, Controller, Get, Query } from "@nestjs/common";
 import { ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
+import { NoCache } from "../../cache";
 import { DashboardService } from "./dashboard.service";
 
 @ApiTags("Dashboard")
@@ -8,6 +9,7 @@ export class DashboardController {
   constructor(private readonly dashboard: DashboardService) {}
 
   @Get("issues")
+  @NoCache()
   @ApiOperation({
     summary: "Slim issue rows for dashboard trend aggregation",
     description:
